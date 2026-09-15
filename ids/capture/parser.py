@@ -43,12 +43,14 @@ def extract_general_fields(pkt) -> dict:
     fields["timestamp"] = datetime.fromtimestamp(float(pkt.time))
 
     if pkt.haslayer(Ether):
-        fields["src_mac"] = pkt[Ether].src # Extract Source MAC
-        fields["dst_mac"] = pkt[Ether].dst # Extract Destination MAC
+        fields["src_mac"] = pkt[Ether].src  # Extract Source MAC
+        fields["dst_mac"] = pkt[Ether].dst  # Extract Destination MAC
 
     if pkt.haslayer(IP):
-        fields["ip_version"] = pkt[IP].version # Extract IPv4/6
+        fields["ip_version"] = pkt[IP].version  # Extract IPv4/6
         fields["length"] = pkt[IP].len
+        fields["src_ip"] = pkt[IP].src
+        fields["dst_ip"] = pkt[IP].dst
 
     return fields
 
@@ -85,3 +87,74 @@ def extract_tcp_fields(pkt) -> dict:
     fields["flags"] = str(tcp_layer.flags)  # Extract Flags from TCP
 
     return fields
+
+
+from scapy.all import UDP, DNS, DNSQR
+
+
+# IF detect_protocol returns UDP
+def extract_udp_fields(pkt) -> dict:
+    fields = {}
+
+    udp_layer = pkt[UDP]
+    fields["src_port"] = udp_layer.sport
+    fields["dst_port"] = udp_layer.dport
+
+    if pkt.haslayer(DNS) and pkt.haslayer(DNSQR):
+        fields["dns_query"] = pkt[DNSQR].qname.decode(errors="ignore")
+
+    return fields
+
+
+from scapy.all import ICMP
+
+
+# IF detect_protocol returns ICMP
+def extract_icmp_fields(pkt) -> dict:
+    fields = {}
+
+    icmp_layer = pkt[ICMP]
+    fields["icmp_type"] = icmp_layer.type
+    fields["icmp_code"] = icmp_layer.code
+
+    return fields
+
+
+from scapy.all import ARPHDR_ETHER
+
+
+# IF detect_protocol returns ARP
+def extract_arp_fields(pkt) -> dict:
+    fields = {}
+
+    arp_layer = pkt[ARP]
+    fields["arp_sender_mac"] = arp_layer.hwsrc
+    fields["arp_sender_ip"] = arp_layer.psrc
+    fields["arp_target_mac"] = arp_layer.hwdst
+    fields["arp_target_ip"] = arp_layer.pdst
+
+    return fields
+
+
+# Step 5
+
+def parse_packet(pkt) -> PacketEvent:
+    protocol = detect_protocol(pkt)  # Check protocol
+    general_fields = extract_general_fields(pkt)  # Extract general fields
+
+    if protocol == "TCP":
+        specific_fields = extract_tcp_fields(pkt)
+    elif protocol == "UDP":
+        specific_fields = extract_udp_fields(pkt)
+    elif protocol == "ICMP":
+        specific_fields = extract_icmp_fields(pkt)
+    elif protocol == "ARP":
+        specific_fields = extract_arp_fields(pkt)
+    else:
+        specific_fields = {}
+
+    # Unpack all key-value pairs of both dicts and combine them
+    all_fields = {**general_fields, **specific_fields}
+    return PacketEvent(protocol=protocol, **all_fields)
+
+
