@@ -1,10 +1,13 @@
 from scapy.all import sniff
 from ids.capture.parser import parse_packet
+from ids.detection.portscan import process_event as process_portscan_event
+from ids.detection.arp_spoof import process_event as process_arp_event
 
 
 # Placeholder function for detection later
 def handle_packet_event(event):
-    print(event)
+    process_portscan_event(event)
+    process_arp_event(event)
 
 
 # Function called on every packet, to be parsed and handed to placeholder function
