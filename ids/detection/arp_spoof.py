@@ -43,4 +43,5 @@ def raise_alert(ip, old_mac, new_mac):
           f"now claimed by {new_mac}")
 
 
-### TO BE TESTED !!!
+### TESTED WITH COMMAND :
+### sudo arpspoof -i {interface} {TARGET_IP} {ROUTER_IP}
