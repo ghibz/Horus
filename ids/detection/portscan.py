@@ -1,5 +1,6 @@
 from collections import defaultdict  # special dictionary, auto-creates a default value
 from datetime import datetime, timedelta
+from ids.alerts import emit
 
 # 15 or more ports + 5-seconds windows = port scan
 PORT_THRESHOLD = 15
@@ -45,8 +46,8 @@ def process_event(event):
 
 
 def raise_alert(src_ip, ports):
-    print(f"[ALERT] Possible port scan detected from IP -> {src_ip} !"
-          f"{len(ports)} distinct ports have been touched in the last {TIME_WINDOW.seconds}s")
+    emit("Port scan", "MEDIUM", src_ip,
+         f"{len(ports)} distinct ports touched in the last {int(TIME_WINDOW.total_seconds())}s")
 
 
 ### TESTED WITH COMMAND :

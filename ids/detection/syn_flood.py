@@ -1,5 +1,7 @@
 from collections import defaultdict
 from datetime import timedelta
+from ids.alerts import emit
+
 
 # parameters
 SYN_THRESHOLD = 50
@@ -44,8 +46,8 @@ def process_event(event):
 
 
 def raise_alert(src_ip, dst_port, count):
-    print(f"[ALERT] Possible SYN Flood detected! {src_ip} sent {count} SYNs "
-          f"to port {dst_port} in the last {TIME_WINDOW.seconds}")
+    emit("SYN flood", "HIGH", src_ip,
+         f"{count} SYNs to port {dst_port} in the last {int(TIME_WINDOW.total_seconds())}s")
 
 
 ### TESTED WITH COMMAND :

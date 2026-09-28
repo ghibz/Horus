@@ -1,4 +1,5 @@
 from datetime import timedelta
+from ids.alerts import emit
 
 # known IP -> MAC mappings, built as we observe ARP
 known_mappings = {}
@@ -39,8 +40,8 @@ def process_event(event):
 
 
 def raise_alert(ip, old_mac, new_mac):
-    print(f"[ALERT] Possible ARP Spoofing detected! IP {ip} was {old_mac}, "
-          f"now claimed by {new_mac}")
+    emit("ARP spoof", "HIGH", ip,
+         f"IP {ip} was {old_mac}, now claimed by {new_mac}")
 
 
 ### TESTED WITH COMMAND :
