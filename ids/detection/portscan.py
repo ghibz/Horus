@@ -1,16 +1,16 @@
-from collections import defaultdict  # special dictionary, auto-creates a default value
-from datetime import datetime, timedelta
-from ids.alerts import emit
+from datetime import timedelta
 
-# 15 or more ports + 5-seconds windows = port scan
+from ids.alerts import emit
+from ids.detection.window import Cooldown, SlidingWindow
+
+# 15 or more distinct ports + 5-second window = port scan
 PORT_THRESHOLD = 15
 TIME_WINDOW = timedelta(seconds=5)
-
-# detector's memory
-recent_activity = defaultdict(list)
-
-last_alert_time = {}
 ALERT_COOLDOWN = timedelta(seconds=30)
+
+# detector's memory: per source IP, the destination ports it has hit recently
+recent_ports = SlidingWindow(TIME_WINDOW)
+cooldown = Cooldown(ALERT_COOLDOWN)
 
 
 def process_event(event):
@@ -20,35 +20,28 @@ def process_event(event):
     if event.flags != "S":
         return
 
-    # fields that function cares about
+    # no IPv4 source (e.g. IPv6 traffic): nothing to attribute the scan to
+    if event.src_ip is None or event.dst_port is None:
+        return
+
     src = event.src_ip
     now = event.timestamp
 
-    # records the port and timestamp under the source IPs history
-    recent_activity[src].append((event.dst_port, now))
-
-    # aging out old data; list comprehension
-    recent_activity[src] = [
-        (port, ts) for (port, ts) in recent_activity[src]
-        if now - ts <= TIME_WINDOW
-    ]
-
-    # converts the surviving ports of the age function into a set of just these numbers
-    # (sets automatically drop duplicates)
-    distinct_ports = set(port for port, ts in recent_activity[src])
+    # records the port under the source IP's history; old entries age out automatically
+    recent_ports.add(src, now, event.dst_port)
+    port_count = recent_ports.distinct(src)
 
     # decision point, if number of distinct ports is over threshold, raise alert
-    if len(distinct_ports) >= PORT_THRESHOLD:
-        last_time = last_alert_time.get(src)
-        if last_time is None or now - last_time >= ALERT_COOLDOWN:
-            raise_alert(src, distinct_ports)
-            last_alert_time[src] = now
+    if port_count >= PORT_THRESHOLD and cooldown.allow(src, now):
+        raise_alert(src, port_count)
 
 
-def raise_alert(src_ip, ports):
+def raise_alert(src_ip, port_count):
     emit("Port scan", "MEDIUM", src_ip,
-         f"{len(ports)} distinct ports touched in the last {int(TIME_WINDOW.total_seconds())}s")
+         f"{port_count} distinct ports touched in the last "
+         f"{int(TIME_WINDOW.total_seconds())}s")
 
 
-### TESTED WITH COMMAND :
-### sudo nmap -sS -Pn -p 1-1000 {TARGET_IP}
+""" TESTED WITH COMMAND :
+### nmap -sS -Pn -p 1-1000 {TARGET_IP}
+"""

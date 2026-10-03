@@ -1,12 +1,14 @@
 from datetime import timedelta
+
 from ids.alerts import emit
+from ids.detection.window import Cooldown
 
 # known IP -> MAC mappings, built as we observe ARP
 known_mappings = {}
 
 # prevents alert spam from spoofing alerts
-last_alert_time = {}
 ALERT_COOLDOWN = timedelta(seconds=30)
+cooldown = Cooldown(ALERT_COOLDOWN)
 
 
 def process_event(event):
@@ -22,21 +24,22 @@ def process_event(event):
     if ip is None or mac is None:
         return
 
+    # ARP probes (a device checking its address is free) use 0.0.0.0 as the
+    # sender IP; that is not a real IP -> MAC mapping
+    if ip == "0.0.0.0":
+        return
+
     # retrieve the MAC of the IP entry
     known_mac = known_mappings.get(ip)
 
     # if the IP doesn't have a MAC entry (first time), insert the entry
     if known_mac is None:
-        # if first time seeing IP - learn it
         known_mappings[ip] = mac
         return
 
     # actual detection; if the MAC is different from the IP -> MAC entry, raise alert
-    if known_mac != mac:
-        last_time = last_alert_time.get(ip)
-        if last_time is None or now - last_time >= ALERT_COOLDOWN:
-            raise_alert(ip, known_mac, mac)
-            last_alert_time[ip] = now
+    if known_mac != mac and cooldown.allow(ip, now):
+        raise_alert(ip, known_mac, mac)
 
 
 def raise_alert(ip, old_mac, new_mac):
@@ -44,5 +47,6 @@ def raise_alert(ip, old_mac, new_mac):
          f"IP {ip} was {old_mac}, now claimed by {new_mac}")
 
 
-### TESTED WITH COMMAND :
-### sudo arpspoof -i {interface} {TARGET_IP} {ROUTER_IP}
+""" TESTED WITH COMMAND :
+### sudo arpspoof -i {interface} -t {TARGET_IP} {ROUTER_IP}
+"""

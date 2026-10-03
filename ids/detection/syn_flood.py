@@ -1,18 +1,17 @@
-from collections import defaultdict
 from datetime import timedelta
-from ids.alerts import emit
 
+from ids.alerts import emit
+from ids.detection.window import Cooldown, SlidingWindow
 
 # parameters
 SYN_THRESHOLD = 50
 TIME_WINDOW = timedelta(seconds=5)
-
-# detector's memory, Source IP, Destination Port as KEYS
-recent_syns = defaultdict(list)
-
-# prevent Spam - parameters
-last_time_alert = {}
 ALERT_COOLDOWN = timedelta(seconds=30)
+
+# detector's memory: per TARGET (dst IP, dst port), the SYNs it received recently,
+# remembering which source sent each one
+recent_syns = SlidingWindow(TIME_WINDOW)
+cooldown = Cooldown(ALERT_COOLDOWN)
 
 
 def process_event(event):
@@ -22,33 +21,35 @@ def process_event(event):
     if event.flags != "S":
         return
 
-    # both src_ip and dst_port as 1 key
-    # this ensures that the same IP but different ports are diff entries
-    key = (event.src_ip, event.dst_port)
+    # no IPv4 addresses (e.g. IPv6 traffic): can't attribute it
+    if event.src_ip is None or event.dst_ip is None or event.dst_port is None:
+        return
+
+    # keyed by the victim, not the attacker: a flood with spoofed random
+    # sources still piles up on one (dst_ip, dst_port)
+    target = (event.dst_ip, event.dst_port)
     now = event.timestamp
 
-    # timestamp of every SYN
-    recent_syns[key].append(now)
+    recent_syns.add(target, now, event.src_ip)
+    syn_count = recent_syns.count(target)
 
-    # age-out
-    recent_syns[key] = [
-        ts for ts in recent_syns[key]
-        if now - ts <= TIME_WINDOW
-    ]
-
-    syn_count = len(recent_syns[key])
-
-    if syn_count >= SYN_THRESHOLD:
-        last_time = last_time_alert.get(key)
-        if last_time is None or now - last_time >= ALERT_COOLDOWN:
-            raise_alert(event.src_ip, event.dst_port, syn_count)
-            last_time_alert[key] = now
+    if syn_count >= SYN_THRESHOLD and cooldown.allow(target, now):
+        raise_alert(target[0], target[1], syn_count, recent_syns.values(target))
 
 
-def raise_alert(src_ip, dst_port, count):
-    emit("SYN flood", "HIGH", src_ip,
-         f"{count} SYNs to port {dst_port} in the last {int(TIME_WINDOW.total_seconds())}s")
+def raise_alert(dst_ip, dst_port, count, sources):
+    window = int(TIME_WINDOW.total_seconds())
+    if len(sources) == 1:
+        source = next(iter(sources))
+        detail = ""
+    else:
+        source = f"{len(sources)} sources"
+        detail = f" from {len(sources)} different sources"
+
+    emit("SYN flood", "HIGH", source,
+         f"{count} SYNs to {dst_ip}:{dst_port} in the last {window}s{detail}")
 
 
-### TESTED WITH COMMAND :
+""" TESTED WITH COMMAND :
 ### sudo hping3 -S -p {PORT} --flood {TARGET_IP}
+"""
