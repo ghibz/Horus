@@ -1,6 +1,8 @@
 # Horus
 Horus - Custom Made Intrusion Detection System (IDS)
 
+<img width="1079" height="725" alt="Horus_GUI" src="https://github.com/user-attachments/assets/79fb62d1-385c-454f-b24b-8e7baf0403a1" />
+
 _____________________________________________________________________________________
 
 Horus is a personal project made due to desire of combining both networking and cyber-security in a project that could help me better understand some topics in these fields, but also get more familiar with Python and coding in general.
