@@ -1,4 +1,5 @@
-"""Horus IDS dashboard (Tkinter, no extra dependencies).
+"""
+Horus IDS dashboard (Tkinter)
 
 Threading model:
   * scapy sniffs in a background thread and the detectors run there.
@@ -22,7 +23,7 @@ MAX_PER_TICK = 100   # cap per poll so an alert storm can't freeze the window
 MAX_ROWS = 2000      # cap on rows kept in the table
 FONT = "Segoe UI"
 
-# Lapis and gold, after the palette of Egyptian falcon imagery
+# lapis and gold
 C = {
     "bg": "#0d1826",
     "panel": "#142236",
