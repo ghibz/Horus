@@ -4,6 +4,7 @@ from ids.capture.parser import parse_packet
 from ids.detection.portscan import process_event as process_portscan_event
 from ids.detection.arp_spoof import process_event as process_arp_event
 from ids.detection.syn_flood import process_event as process_synflood_event
+from ids.detection.udp_portscan import process_event as process_udp_portscan_event
 
 # Shared counter, read by the GUI to show packets captured
 stats = {"packets": 0}
@@ -14,6 +15,7 @@ def handle_packet_event(event):
     process_portscan_event(event)
     process_arp_event(event)
     process_synflood_event(event)
+    process_udp_portscan_event(event)
 
 
 # Function called on every packet, to be parsed and handed to the detectors
