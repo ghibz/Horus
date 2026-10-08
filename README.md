@@ -64,8 +64,3 @@ ________________________________________________________________________________
 _____________________________________________________________________________________
 
 ** window.py **
-
-'SlidingWindow' tracks, per key, a deque of pairs (timestamp and value) plus a 'Counter' of values currently "in window". The add() function records a new event and expires anything older than the window, while the count() gives raw event count, distinct() gives distinct-value count and values() gives the actual set. 'Cooldown' is the function which makes it so that it doesn't display an alert twice within N seconds. Together, these replace what used to be three separate dictionaries, into one shared implementation
-
-_____________________________________________________________________________________
-
