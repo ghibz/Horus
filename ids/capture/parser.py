@@ -1,7 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from scapy.all import ARP, DNS, DNSQR, ICMP, IP, TCP, UDP, Ether, IPv6
 
 # Step 1
 @dataclass  # decorator, auto-generates __init__ and a readable string representation
@@ -33,10 +34,6 @@ class PacketEvent:
     arp_target_ip: Optional[str] = None
 
 
-# Step 2
-from scapy.all import Ether, IP
-
-
 # Function to extract general fields of a packet, timestamp, Src/Dest MAC and IP if needed
 def extract_general_fields(pkt) -> dict:
     fields = {}
@@ -55,10 +52,6 @@ def extract_general_fields(pkt) -> dict:
     return fields
 
 
-# Step 3
-from scapy.all import TCP, UDP, ICMP, ARP
-
-
 # Function to extract the packet's protocol, for now, only TCP, UDP, ICMP and ARP are detectable
 def detect_protocol(pkt) -> str:
     if pkt.haslayer(TCP):
@@ -73,10 +66,6 @@ def detect_protocol(pkt) -> str:
         return "Unknown"
 
 
-# Step 4
-from scapy.all import TCP
-
-
 # IF detect_protocol returns TCP
 def extract_tcp_fields(pkt) -> dict:
     fields = {}
@@ -87,9 +76,6 @@ def extract_tcp_fields(pkt) -> dict:
     fields["flags"] = str(tcp_layer.flags)  # Extract Flags from TCP
 
     return fields
-
-
-from scapy.all import UDP, DNS, DNSQR
 
 
 # IF detect_protocol returns UDP
@@ -104,9 +90,6 @@ def extract_udp_fields(pkt) -> dict:
         fields["dns_query"] = pkt[DNSQR].qname.decode(errors="ignore")
 
     return fields
-
-
-from scapy.all import ICMP
 
 
 # IF detect_protocol returns ICMP
