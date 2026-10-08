@@ -1,7 +1,2 @@
 scapy
 pyyaml
-csv
-queue
-time
-tkinter
-pathlib
