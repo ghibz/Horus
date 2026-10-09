@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown
 
@@ -7,7 +8,7 @@ from ids.detection.window import Cooldown
 known_mappings = {}
 
 # prevents alert spam from spoofing alerts
-ALERT_COOLDOWN = timedelta(seconds=30)
+ALERT_COOLDOWN = timedelta(seconds=config.get("arp_spoof")["cooldown_seconds"])
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 

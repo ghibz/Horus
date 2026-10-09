@@ -1,12 +1,14 @@
 from datetime import timedelta
 
+from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
 
-# 15 or more distinct ports + 5-second window = port scan
-PORT_THRESHOLD = 15
-TIME_WINDOW = timedelta(seconds=5)
-ALERT_COOLDOWN = timedelta(seconds=30)
+# thresholds come from config.yaml (section: port_scan)
+_cfg = config.get("port_scan")
+PORT_THRESHOLD = _cfg["threshold"]
+TIME_WINDOW = timedelta(seconds=_cfg["window_seconds"])
+ALERT_COOLDOWN = timedelta(seconds=_cfg["cooldown_seconds"])
 
 # detector's memory: per source IP, the destination ports it has hit recently
 recent_ports = SlidingWindow(TIME_WINDOW)

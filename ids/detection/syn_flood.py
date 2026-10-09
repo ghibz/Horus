@@ -1,13 +1,15 @@
 from datetime import timedelta
 
+from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
 from ids.detection.addr import format_endpoint
 
-# parameters
-SYN_THRESHOLD = 50
-TIME_WINDOW = timedelta(seconds=5)
-ALERT_COOLDOWN = timedelta(seconds=30)
+# thresholds come from config.yaml (section: syn_flood)
+_cfg = config.get("syn_flood")
+SYN_THRESHOLD = _cfg["threshold"]
+TIME_WINDOW = timedelta(seconds=_cfg["window_seconds"])
+ALERT_COOLDOWN = timedelta(seconds=_cfg["cooldown_seconds"])
 
 # detector's memory: per TARGET (dst IP, dst port), the SYNs it received recently,
 # remembering which source sent each one

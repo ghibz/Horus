@@ -1,14 +1,15 @@
 from datetime import timedelta
 
+from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
 
-# Ports for SSH, FTP, Telnet, RDP
-AUTH_PORTS = {22, 21, 23, 3389}
-
-ATTEMPT_THRESHOLD = 10  # More than 10 > brute force
-TIME_WINDOW = timedelta(seconds=10)
-ALERT_COOLDOWN = timedelta(seconds=30)
+# thresholds come from config.yaml (section: brute_force)
+_cfg = config.get("brute_force")
+AUTH_PORTS = set(_cfg["ports"])      # default: SSH, FTP, Telnet, RDP
+ATTEMPT_THRESHOLD = _cfg["threshold"]
+TIME_WINDOW = timedelta(seconds=_cfg["window_seconds"])
+ALERT_COOLDOWN = timedelta(seconds=_cfg["cooldown_seconds"])
 
 recent_attempts = SlidingWindow(TIME_WINDOW)
 cooldown = Cooldown(ALERT_COOLDOWN)
