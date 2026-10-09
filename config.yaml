@@ -1,0 +1,33 @@
+# Horus settings
+# Any setting left out uses the built-in settings
+# threshold -- how many events trigger the event
+# window_seconds -- how far back the events are counted
+# cooldown_seconds -- min. gap between repeating alerts for the same source
+
+# Distinct TCP ports from one source:
+port_scan:
+  threshold: 15
+  window_seconds: 5
+  cooldown_seconds: 30
+
+# Distinct UDP ports from one source:
+udp_scan:
+  threshold: 15
+  window_seconds: 5
+  cooldown_seconds: 10
+
+# SYNs received by one target
+syn_flood:
+  threshold: 50
+  window_seconds: 5
+  cooldown_seconds: 30
+
+# SYNs from one source to a login port
+brute_force:
+  threshold: 10
+  window_seconds: 10
+  cooldown_seconds: 30
+  ports: [22, 21, 23, 3389] # SSH, FTP, Telnet, RDP
+
+arp_spoof:
+  cooldown_seconds: 30
