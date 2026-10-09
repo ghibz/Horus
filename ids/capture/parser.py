@@ -4,6 +4,7 @@ from typing import Optional
 
 from scapy.all import ARP, DNS, DNSQR, ICMP, IP, TCP, UDP, Ether, IPv6
 
+
 # Step 1
 @dataclass  # decorator, auto-generates __init__ and a readable string representation
 class PacketEvent:
@@ -17,7 +18,7 @@ class PacketEvent:
     ip_version: Optional[int] = None
     src_ip: Optional[str] = None
     dst_ip: Optional[str] = None
-    length: Optional[int] = None
+    length: Optional[int] = None  # size of the IP packet in bytes (header + payload)
 
     src_port: Optional[int] = None
     dst_port: Optional[int] = None
@@ -48,6 +49,12 @@ def extract_general_fields(pkt) -> dict:
         fields["length"] = pkt[IP].len
         fields["src_ip"] = pkt[IP].src
         fields["dst_ip"] = pkt[IP].dst
+    elif pkt.haslayer(IPv6):
+        ip6 = pkt[IPv6]
+        fields["ip_version"] = ip6.version
+        fields["length"] = (ip6.plen or 0) + 40  # take out 40-bytes header
+        fields["src_ip"] = ip6.src
+        fields["dst_ip"] = ip6.dst
 
     return fields
 
@@ -139,5 +146,3 @@ def parse_packet(pkt) -> PacketEvent:
     # Unpack all key-value pairs of both dicts and combine them
     all_fields = {**general_fields, **specific_fields}
     return PacketEvent(protocol=protocol, **all_fields)
-
-

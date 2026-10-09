@@ -74,7 +74,7 @@ class HorusApp(tk.Tk):
 
     # ------------------------------------------------------------ styling
     def _load_logo(self):
-        path = Path(__file__).resolve().parents[2] / "Horus.png"
+        path = Path(__file__).resolve().parents[2] / "misc/Horus.png"
         try:
             img = tk.PhotoImage(file=str(path))
             return img.subsample(max(1, img.height() // 44))

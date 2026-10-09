@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
+from ids.detection.addr import format_endpoint
 
 # parameters
 SYN_THRESHOLD = 50
@@ -47,7 +48,7 @@ def raise_alert(dst_ip, dst_port, count, sources):
         detail = f" from {len(sources)} different sources"
 
     emit("SYN flood", "HIGH", source,
-         f"{count} SYNs to {dst_ip}:{dst_port} in the last {window}s{detail}")
+         f"{count} SYNs to {format_endpoint(dst_ip, dst_port)} in the last {window}s{detail}")
 
 
 """ TESTED WITH COMMAND :

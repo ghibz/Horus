@@ -113,6 +113,13 @@ class PortScanTests(unittest.TestCase):
             portscan.process_event(tcp(port * 0.01, dport=port, flags="SA"))
         self.assertEqual(RAISED, [])
 
+    def test_ipv6_scanner_is_detected(self):
+        for port in range(1, 41):
+            portscan.process_event(
+                tcp(port * 0.01, src="2001:db8::5", dst="2001:db8::1", dport=port))
+        self.assertEqual(len(RAISED), 1)
+        self.assertEqual(RAISED[0].source, "2001:db8::5")
+
 
 class SynFloodTests(unittest.TestCase):
     def setUp(self):
