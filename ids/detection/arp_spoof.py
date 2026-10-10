@@ -45,7 +45,8 @@ def process_event(event):
 
 def raise_alert(ip, old_mac, new_mac):
     emit("ARP spoof", "HIGH", ip,
-         f"IP {ip} was {old_mac}, now claimed by {new_mac}")
+         f"IP {ip} was {old_mac}, now claimed by {new_mac}",
+         details={"old_mac": old_mac, "new_mac": new_mac})
 
 
 """ TESTED WITH COMMAND :

@@ -50,7 +50,10 @@ def raise_alert(dst_ip, dst_port, count, sources):
         detail = f" from {len(sources)} different sources"
 
     emit("SYN flood", "HIGH", source,
-         f"{count} SYNs to {format_endpoint(dst_ip, dst_port)} in the last {window}s{detail}")
+         f"{count} SYNs to {format_endpoint(dst_ip, dst_port)} in the last {window}s{detail}",
+         target=dst_ip, dst_port=dst_port,
+         details={"syn_count": count, "source_count": len(sources),
+                  "window_seconds": window})
 
 
 """ TESTED WITH COMMAND :

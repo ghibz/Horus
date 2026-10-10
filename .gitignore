@@ -3,3 +3,6 @@
 __pycache__/
 *.pyc
 *.pcap
+horus.db
+horus.db-wal
+horus.db-shm

@@ -15,7 +15,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from ids import alerts
+from ids import config
 from ids.capture import sniffer as capture
+from ids.storage.db import AlertStore
 
 AUTO = "Auto (default)"
 POLL_MS = 200        # how often the GUI checks for new alerts
@@ -50,6 +52,8 @@ class HorusApp(tk.Tk):
 
         self.alert_queue = queue.Queue()
         alerts.subscribe(self.alert_queue.put)
+        alerts.subscribe(self._store_alert)   # saves to the database
+        self.store = None
 
         self.sniffer = None
         self.started_at = None
@@ -251,10 +255,14 @@ class HorusApp(tk.Tk):
         iface = None if choice == AUTO else choice
 
         capture.stats["packets"] = 0
+        self.store = AlertStore()
+        self.store.start(interface=iface, config={
+            name: config.get(name) for name in config.DEFAULTS})
         try:
             self.sniffer = capture.create_sniffer(iface)
             self.sniffer.start()
         except Exception as exc:
+            self._close_store()
             self.sniffer = None
             messagebox.showerror("Horus", f"Capture could not start.\n\n{exc}")
             return
@@ -287,8 +295,20 @@ class HorusApp(tk.Tk):
             except Exception:
                 pass
         self.sniffer = None
+        self._close_store()
         self.started_at = None
         self._set_running(False)
+
+    def _store_alert(self, alert):
+        # runs on the sniffing thread: just queues the alert for the DB writer
+        store = self.store
+        if store is not None:
+            store.submit(alert)
+
+    def _close_store(self):
+        store, self.store = self.store, None
+        if store is not None:
+            store.stop()
 
     def clear(self):
         self.tree.delete(*self.tree.get_children())

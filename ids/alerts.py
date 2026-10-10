@@ -6,16 +6,19 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 
 @dataclass
 class Alert:
-    kind: str          # e.g. "Port scan"
-    severity: str      # "LOW" | "MEDIUM" | "HIGH"
-    source: str        # offending IP (or other identifier)
+    kind: str
+    severity: str
+    source: str
     message: str
     timestamp: datetime = field(default_factory=datetime.now)
+    target: Optional[str] = None       # victim IP, if there is one
+    dst_port: Optional[int] = None
+    details: Optional[dict] = None     # detector-specific extras (stored as JSON)
 
 
 _subscribers: List[Callable[[Alert], None]] = []
@@ -26,9 +29,12 @@ def subscribe(callback: Callable[[Alert], None]) -> None:
     _subscribers.append(callback)
 
 
-def emit(kind: str, severity: str, source, message: str) -> Alert:
+def emit(kind: str, severity: str, source, message: str,
+         target=None, dst_port=None, details=None) -> Alert:
     """Create an alert, print it to the console and hand it to subscribers."""
-    alert = Alert(kind, severity, str(source), message)
+    alert = Alert(kind, severity, str(source), message,
+                  target=None if target is None else str(target),
+                  dst_port=dst_port, details=details)
     print(f"[ALERT] [{severity}] {kind} | {source} | {message}")
 
     for callback in _subscribers:
@@ -38,3 +44,4 @@ def emit(kind: str, severity: str, source, message: str) -> Alert:
             print(f"[WARN] Alert subscriber failed: {exc!r}")
 
     return alert
+

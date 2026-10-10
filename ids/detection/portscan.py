@@ -41,7 +41,9 @@ def process_event(event):
 def raise_alert(src_ip, port_count):
     emit("Port scan", "MEDIUM", src_ip,
          f"{port_count} distinct ports touched in the last "
-         f"{int(TIME_WINDOW.total_seconds())}s")
+         f"{int(TIME_WINDOW.total_seconds())}s",
+         details={"distinct_ports": port_count,
+                  "window_seconds": TIME_WINDOW.total_seconds()})
 
 
 """ TESTED WITH COMMAND :

@@ -40,7 +40,10 @@ def process_event(event):
 def raise_alert(src_ip, dst_port, count):
     emit("Brute force", "HIGH", src_ip,
          f"{count} connection attempts made to port {dst_port} in the last "
-         f"{int(TIME_WINDOW.total_seconds())}")
+         f"{int(TIME_WINDOW.total_seconds())}",
+         dst_port=dst_port,
+         details={"attempts": count,
+                  "window_seconds": TIME_WINDOW.total_seconds()})
 
 
 """ TESTED WITH COMMAND :
