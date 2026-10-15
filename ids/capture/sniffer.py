@@ -6,6 +6,7 @@ from ids.detection.arp_spoof import process_event as process_arp_event
 from ids.detection.syn_flood import process_event as process_synflood_event
 from ids.detection.udp_portscan import process_event as process_udp_portscan_event
 from ids.detection.bruteforce import process_event as process_bruteforce_event
+from ids.detection.icmp_flood import process_event as process_icmp_flood_event
 
 # Shared counter, read by the GUI to show packets captured
 stats = {"packets": 0}
@@ -18,6 +19,7 @@ def handle_packet_event(event):
     process_synflood_event(event)
     process_udp_portscan_event(event)
     process_bruteforce_event(event)
+    process_icmp_flood_event(event)
 
 
 # Function called on every packet, to be parsed and handed to the detectors

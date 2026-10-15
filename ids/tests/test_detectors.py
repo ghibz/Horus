@@ -6,8 +6,10 @@ import unittest
 from datetime import datetime, timedelta
 
 from ids import alerts
+from ids.capture import sniffer
 from ids.capture.parser import PacketEvent
-from ids.detection import arp_spoof, bruteforce, portscan, syn_flood, udp_portscan
+from ids.detection import (arp_spoof, bruteforce, icmp_flood, portscan, syn_flood,
+                           udp_portscan)
 from ids.detection.window import Cooldown, SlidingWindow
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
@@ -29,6 +31,11 @@ def tcp(seconds, src="10.0.0.5", dst="10.0.0.1", dport=80, flags="S"):
 def udp(seconds, src="10.0.0.5", dst="10.0.0.1", dport=53):
     return PacketEvent(timestamp=at(seconds), protocol="UDP", src_ip=src,
                        dst_ip=dst, dst_port=dport)
+
+
+def icmp(seconds, src="10.0.0.5", dst="10.0.0.1", icmp_type=8):
+    return PacketEvent(timestamp=at(seconds), protocol="ICMP", src_ip=src,
+                       dst_ip=dst, icmp_type=icmp_type)
 
 
 def arp(seconds, ip, mac):
@@ -242,6 +249,73 @@ class BruteForceTests(unittest.TestCase):
             bruteforce.process_event(tcp(i * 0.1, dport=22))
             bruteforce.process_event(tcp(i * 0.1, dport=21))
         self.assertEqual(RAISED, [])
+
+
+class IcmpFloodTests(unittest.TestCase):
+    def setUp(self):
+        icmp_flood.recent_pings.clear()
+        icmp_flood.cooldown.clear()
+        RAISED.clear()
+
+    def test_single_source_flood(self):
+        for i in range(120):
+            icmp_flood.process_event(icmp(i * 0.01))
+        self.assertEqual(len(RAISED), 1)
+        alert = RAISED[0]
+        self.assertEqual(alert.kind, "ICMP flood")
+        self.assertEqual(alert.severity, "HIGH")
+        self.assertEqual(alert.source, "10.0.0.5")
+        self.assertEqual(alert.target, "10.0.0.1")
+
+    def test_spoofed_sources_are_still_caught(self):
+        for i in range(120):
+            icmp_flood.process_event(icmp(i * 0.01, src=f"172.16.{i // 250}.{i % 250}"))
+        self.assertEqual(len(RAISED), 1)
+        self.assertIn("sources", RAISED[0].source)
+
+    def test_below_threshold_is_quiet(self):
+        for i in range(30):
+            icmp_flood.process_event(icmp(i * 0.01))
+        self.assertEqual(RAISED, [])
+
+    def test_slow_pings_outside_window_are_quiet(self):
+        for i in range(120):                     # 1 ping per second, window is 5s
+            icmp_flood.process_event(icmp(i))
+        self.assertEqual(RAISED, [])
+
+    def test_echo_replies_are_not_counted(self):
+        for i in range(120):                     # type 0 = echo reply
+            icmp_flood.process_event(icmp(i * 0.01, icmp_type=0))
+        self.assertEqual(RAISED, [])
+
+    def test_other_protocols_are_ignored(self):
+        for i in range(120):
+            icmp_flood.process_event(tcp(i * 0.01))
+        self.assertEqual(RAISED, [])
+
+    def test_missing_addresses_are_ignored(self):
+        for i in range(120):
+            icmp_flood.process_event(icmp(i * 0.01, dst=None))
+        self.assertEqual(RAISED, [])
+
+    def test_targets_are_counted_separately(self):
+        # 30 pings to each of two hosts: neither reaches 50 on its own
+        for i in range(30):
+            icmp_flood.process_event(icmp(i * 0.01, dst="10.0.0.1"))
+            icmp_flood.process_event(icmp(i * 0.01, dst="10.0.0.2"))
+        self.assertEqual(RAISED, [])
+
+
+class SnifferWiringTests(unittest.TestCase):
+    """Events handed to the sniffer must actually reach the detectors."""
+
+    def test_icmp_flood_is_registered_in_the_sniffer(self):
+        icmp_flood.recent_pings.clear()
+        icmp_flood.cooldown.clear()
+        RAISED.clear()
+        for i in range(120):
+            sniffer.handle_packet_event(icmp(i * 0.01))
+        self.assertEqual([a.kind for a in RAISED], ["ICMP flood"])
 
 
 class ArpSpoofTests(unittest.TestCase):

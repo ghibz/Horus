@@ -66,6 +66,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             self.load("port_scan:\n  cooldown_seconds: 0\n")["cooldown_seconds"], 0)
 
+    def test_icmp_flood_section_has_defaults(self):
+        self.assertEqual(self.load("", "icmp_flood"), config.DEFAULTS["icmp_flood"])
+
+    def test_icmp_flood_override(self):
+        cfg = self.load("icmp_flood:\n  threshold: 200\n", "icmp_flood")
+        self.assertEqual(cfg["threshold"], 200)
+        self.assertEqual(cfg["window_seconds"],
+                         config.DEFAULTS["icmp_flood"]["window_seconds"])
+
+    def test_icmp_flood_bad_value_is_rejected(self):
+        with self.assertRaises(config.ConfigError):
+            self.load("icmp_flood:\n  threshold: 0\n", "icmp_flood")
+
     def test_bad_configs_are_rejected(self):
         bad = {
             "unknown section":       "portscan:\n  threshold: 5\n",

@@ -19,6 +19,7 @@ DEFAULTS = {
     "brute_force": {"threshold": 10, "window_seconds": 10, "cooldown_seconds": 30,
                     "ports": [22, 21, 23, 3389]},
     "arp_spoof":   {"cooldown_seconds": 30},
+    "icmp_flood": {"threshold": 50, "window_seconds": 5, "cooldown_seconds": 30},
 }
 
 _cache = None
