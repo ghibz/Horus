@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 from ids import alerts
 from ids.capture import sniffer
 from ids.capture.parser import PacketEvent
-from ids.detection import (arp_spoof, bruteforce, icmp_flood, portscan, syn_flood,
-                           udp_portscan)
+from ids.detection import (arp_spoof, bruteforce, icmp_flood, icmp_unusual, portscan,
+                           syn_flood, udp_portscan)
 from ids.detection.window import Cooldown, SlidingWindow
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
@@ -57,14 +57,14 @@ class SlidingWindowTests(unittest.TestCase):
     def test_old_entries_expire(self):
         self.w.add("a", at(0), 1)
         self.w.add("a", at(1), 2)
-        self.w.add("a", at(7), 3)            # first two are now older than 5s
+        self.w.add("a", at(7), 3)  # first two are now older than 5s
         self.assertEqual(self.w.count("a"), 1)
         self.assertEqual(self.w.values("a"), {3})
 
     def test_idle_keys_are_removed(self):
         self.w.add("idle", at(0), 1)
         self.w.add("busy", at(1), 1)
-        self.w.add("busy", at(10), 1)        # triggers the periodic sweep
+        self.w.add("busy", at(10), 1)  # triggers the periodic sweep
         self.assertEqual(len(self.w), 1)
         self.assertEqual(self.w.count("idle"), 0)
 
@@ -82,7 +82,7 @@ class CooldownTests(unittest.TestCase):
         c = Cooldown(timedelta(seconds=30))
         self.assertTrue(c.allow("x", at(0)))
         self.assertFalse(c.allow("x", at(10)))
-        self.assertTrue(c.allow("y", at(10)))     # other keys are independent
+        self.assertTrue(c.allow("y", at(10)))  # other keys are independent
         self.assertTrue(c.allow("x", at(31)))
 
     def test_memory_is_bounded(self):
@@ -116,7 +116,7 @@ class PortScanTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
     def test_slow_scan_outside_window_is_quiet(self):
-        for port in range(1, 41):               # 1 port per second
+        for port in range(1, 41):  # 1 port per second
             portscan.process_event(tcp(port, dport=port))
         self.assertEqual(RAISED, [])
 
@@ -158,12 +158,12 @@ class UdpScanTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
     def test_same_port_many_times_is_not_a_scan(self):
-        for i in range(200):                    # e.g. a DNS client
+        for i in range(200):  # e.g. a DNS client
             udp_portscan.process_event(udp(i * 0.01, dport=53))
         self.assertEqual(RAISED, [])
 
     def test_slow_scan_outside_window_is_quiet(self):
-        for port in range(1, 41):               # 1 port per second
+        for port in range(1, 41):  # 1 port per second
             udp_portscan.process_event(udp(port, dport=port))
         self.assertEqual(RAISED, [])
 
@@ -235,7 +235,7 @@ class BruteForceTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
     def test_slow_attempts_outside_window_are_quiet(self):
-        for i in range(30):                      # 1 every 2s, window is 10s
+        for i in range(30):  # 1 every 2s, window is 10s
             bruteforce.process_event(tcp(i * 2, dport=22))
         self.assertEqual(RAISED, [])
 
@@ -245,7 +245,7 @@ class BruteForceTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
     def test_ports_are_counted_separately(self):
-        for i in range(6):                       # 6 on SSH + 6 on FTP, neither hits 10
+        for i in range(6):  # 6 on SSH + 6 on FTP, neither hits 10
             bruteforce.process_event(tcp(i * 0.1, dport=22))
             bruteforce.process_event(tcp(i * 0.1, dport=21))
         self.assertEqual(RAISED, [])
@@ -279,12 +279,12 @@ class IcmpFloodTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
     def test_slow_pings_outside_window_are_quiet(self):
-        for i in range(120):                     # 1 ping per second, window is 5s
+        for i in range(120):  # 1 ping per second, window is 5s
             icmp_flood.process_event(icmp(i))
         self.assertEqual(RAISED, [])
 
     def test_echo_replies_are_not_counted(self):
-        for i in range(120):                     # type 0 = echo reply
+        for i in range(120):  # type 0 = echo reply
             icmp_flood.process_event(icmp(i * 0.01, icmp_type=0))
         self.assertEqual(RAISED, [])
 
@@ -306,6 +306,68 @@ class IcmpFloodTests(unittest.TestCase):
         self.assertEqual(RAISED, [])
 
 
+class IcmpUnusualTests(unittest.TestCase):
+    def setUp(self):
+        icmp_unusual.cooldown.clear()
+        RAISED.clear()
+
+    def test_each_unusual_type_raises_a_low_alert(self):
+        names = {13: "timestamp request", 15: "information request",
+                 17: "address mask request"}
+        for icmp_type, name in names.items():
+            with self.subTest(icmp_type=icmp_type):
+                icmp_unusual.cooldown.clear()
+                RAISED.clear()
+                icmp_unusual.process_event(icmp(0, icmp_type=icmp_type))
+                self.assertEqual(len(RAISED), 1)
+                alert = RAISED[0]
+                self.assertEqual(alert.kind, "Unusual ICMP")
+                self.assertEqual(alert.severity, "LOW")
+                self.assertEqual(alert.source, "10.0.0.5")
+                self.assertEqual(alert.target, "10.0.0.1")
+                self.assertIn(name, alert.message)
+                self.assertEqual(alert.details["icmp_type"], icmp_type)
+
+    def test_normal_ping_is_ignored(self):
+        icmp_unusual.process_event(icmp(0, icmp_type=8))
+        self.assertEqual(RAISED, [])
+
+    def test_replies_are_ignored(self):
+        # 14, 16, 18 are the replies; our own answers must not alert about ourselves
+        for icmp_type in (0, 14, 16, 18):
+            icmp_unusual.process_event(icmp(0, icmp_type=icmp_type))
+        self.assertEqual(RAISED, [])
+
+    def test_repeats_within_cooldown_raise_one_alert(self):
+        for seconds in (0, 1, 2, 30):
+            icmp_unusual.process_event(icmp(seconds, icmp_type=13))
+        self.assertEqual(len(RAISED), 1)
+
+    def test_alerts_again_after_cooldown(self):
+        icmp_unusual.process_event(icmp(0, icmp_type=13))
+        icmp_unusual.process_event(icmp(61, icmp_type=13))
+        self.assertEqual(len(RAISED), 2)
+
+    def test_different_types_are_tracked_separately(self):
+        icmp_unusual.process_event(icmp(0, icmp_type=13))
+        icmp_unusual.process_event(icmp(1, icmp_type=17))
+        self.assertEqual(len(RAISED), 2)
+
+    def test_different_sources_are_tracked_separately(self):
+        icmp_unusual.process_event(icmp(0, src="10.0.0.5", icmp_type=13))
+        icmp_unusual.process_event(icmp(1, src="10.0.0.6", icmp_type=13))
+        self.assertEqual(len(RAISED), 2)
+
+    def test_missing_addresses_are_ignored(self):
+        icmp_unusual.process_event(icmp(0, src=None, icmp_type=13))
+        icmp_unusual.process_event(icmp(1, dst=None, icmp_type=13))
+        self.assertEqual(RAISED, [])
+
+    def test_other_protocols_are_ignored(self):
+        icmp_unusual.process_event(tcp(0))
+        self.assertEqual(RAISED, [])
+
+
 class SnifferWiringTests(unittest.TestCase):
     """Events handed to the sniffer must actually reach the detectors."""
 
@@ -316,6 +378,12 @@ class SnifferWiringTests(unittest.TestCase):
         for i in range(120):
             sniffer.handle_packet_event(icmp(i * 0.01))
         self.assertEqual([a.kind for a in RAISED], ["ICMP flood"])
+
+    def test_icmp_unusual_is_registered_in_the_sniffer(self):
+        icmp_unusual.cooldown.clear()
+        RAISED.clear()
+        sniffer.handle_packet_event(icmp(0, icmp_type=13))
+        self.assertEqual([a.kind for a in RAISED], ["Unusual ICMP"])
 
 
 class ArpSpoofTests(unittest.TestCase):

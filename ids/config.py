@@ -20,6 +20,7 @@ DEFAULTS = {
                     "ports": [22, 21, 23, 3389]},
     "arp_spoof":   {"cooldown_seconds": 30},
     "icmp_flood": {"threshold": 50, "window_seconds": 5, "cooldown_seconds": 30},
+    "icmp_unusual": {"cooldown_seconds": 60},
 }
 
 _cache = None

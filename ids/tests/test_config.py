@@ -79,6 +79,19 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             self.load("icmp_flood:\n  threshold: 0\n", "icmp_flood")
 
+
+    def test_icmp_unusual_section_has_defaults(self):
+        self.assertEqual(self.load("", "icmp_unusual"), config.DEFAULTS["icmp_unusual"])
+
+    def test_icmp_unusual_cooldown_override(self):
+        cfg = self.load("icmp_unusual:\n  cooldown_seconds: 120\n", "icmp_unusual")
+        self.assertEqual(cfg["cooldown_seconds"], 120)
+
+    def test_icmp_unusual_has_no_threshold_setting(self):
+        # this detector only has a cooldown; a threshold line is a typo, not a setting
+        with self.assertRaises(config.ConfigError):
+            self.load("icmp_unusual:\n  threshold: 5\n", "icmp_unusual")
+
     def test_bad_configs_are_rejected(self):
         bad = {
             "unknown section":       "portscan:\n  threshold: 5\n",

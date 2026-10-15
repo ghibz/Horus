@@ -39,7 +39,7 @@ C = {
     "ok": "#3fb37f",
 }
 # Row tint per severity (text stays readable); LOW has no tint
-SEVERITY_TINT = {"HIGH": "#3a2230", "MEDIUM": "#33301f", "LOW": C["panel"]}
+SEVERITY_TINT = {"HIGH": "#3a2230", "MEDIUM": "#33301f", "LOW": "#1b3a5c"}
 
 
 class HorusApp(tk.Tk):
