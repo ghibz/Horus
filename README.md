@@ -2,7 +2,7 @@
 
 **A custom network Intrusion Detection System (IDS) written in Python.**
 
-Horus captures live traffic with Scapy, normalises every packet into a structured event, and runs it through a set of rule-based detectors. Alerts are shown in a real-time desktop dashboard and can be exported to CSV.
+Horus captures live traffic with Scapy, normalises every packet into a structured event, and runs it through a set of rule-based detectors. Alerts are shown in a real-time desktop dashboard, saved to a local SQLite database, and can be exported to CSV.
 
 <img width="1079" height="725" alt="Horus_GUI" src="https://github.com/user-attachments/assets/79fb62d1-385c-454f-b24b-8e7baf0403a1" />
 
@@ -17,6 +17,7 @@ Horus captures live traffic with Scapy, normalises every packet into a structure
 - **IPv4 and IPv6 support** in the parser and in the detectors that don't depend on ARP.
 - **Memory-bounded detection state:** a flood of spoofed source IPs cannot exhaust RAM.
 - **YAML-configurable thresholds**, with strict validation: typos and nonsense values are rejected with a clear error instead of silently weakening detection.
+- **Alert storage:** every alert is written to `horus.db` (SQLite) by a background thread, so a slow disk never delays packet processing. Each Start/Stop is recorded as a session.
 - **Tkinter dashboard:** interface picker, start/stop, live alert table with severity colouring, counters (packets, alerts, high severity, uptime), CSV export.
 - **Unit tests** that need no network, GUI or admin rights.
 
@@ -44,10 +45,11 @@ A few design decisions worth noting:
 ```
  network ──► sniffer ──► parser ──► detectors ──► alerts.emit() ──► subscribers
             (Scapy)    PacketEvent  (5 modules)                      ├─ console
-                                                                     └─ GUI (via queue)
+                                                                     ├─ GUI (via queue)
+                                                                     └─ SQLite (via queue + writer thread)
 ```
 
-Detectors only know about `emit()`; they never know who is listening. Anything that wants alerts (the GUI today, a database or log writer tomorrow) registers a callback with `alerts.subscribe()`.
+Detectors only know about `emit()`; they never know who is listening. Anything that wants alerts (the GUI and the SQLite store today, a log writer tomorrow) registers a callback with `alerts.subscribe()`.
 
 ```
 Horus/
@@ -68,9 +70,11 @@ Horus/
 │   │   ├── bruteforce.py
 │   │   ├── arp_spoof.py
 │   │   └── addr.py          # IPv4/IPv6 endpoint formatting
+│   ├── storage/
+│   │   └── db.py            # SQLite alert store (background writer thread)
 │   ├── gui/
 │   │   └── app.py           # Tkinter dashboard
-│   ├── scripts/             # helpers to enable/disable SSH for brute-force testing
+│   ├── scripts/             # SSH enable/disable helpers, sniff_demo.py (manual)
 │   └── tests/               # unit tests
 └── misc/                    # logo and assets
 ```
@@ -85,7 +89,9 @@ Horus/
 - `SlidingWindow` remembers recent events per key (for example per source IP), expires old ones, and answers `count()` / `distinct()` / `values()`. It sweeps idle keys periodically and enforces a hard cap on tracked keys (default 50,000), evicting the oldest.
 - `Cooldown` guarantees `allow(key, now)` is true at most once per period per key, also with a hard cap.
 
-**`alerts.py`:** `Alert` (kind, severity, source, message, timestamp) and `emit()`, which prints to the console and calls every subscriber. A failing subscriber is caught and reported so it can never interrupt detection.
+**`alerts.py`:** `Alert` (kind, severity, source, message, timestamp, plus optional target, destination port and detector-specific details) and `emit()`, which prints to the console and calls every subscriber. A failing subscriber is caught and reported so it can never interrupt detection.
+
+**`storage/db.py`:** SQLite storage for alerts. `AlertStore` is one per monitoring session (Start to Stop): the sniffing thread only puts each alert on a queue, and a dedicated writer thread owns the database connection and inserts in batches, so a slow disk can never delay packet processing. Alerts are stored with UTC timestamps in `horus.db`, with a `sessions` table recording the interface and settings used for each run. `recent_alerts()` reads them back, newest first, optionally filtered by kind, source or severity.
 
 **`config.py`:** built-in defaults are merged with `config.yaml`, so Horus still runs if the file is missing or lists only a few settings. Unknown sections or keys and invalid values raise a `ConfigError`. Setting `HORUS_CONFIG` points to a different file (the tests use this to run on defaults).
 
@@ -138,10 +144,10 @@ Sections: `port_scan`, `udp_scan`, `syn_flood`, `brute_force`, `arp_spoof`. Thes
 From the project root:
 
 ```bash
-python -m unittest ids.tests.test_detectors ids.tests.test_parser -v
+python -m unittest ids.tests.test_detectors ids.tests.test_parser ids.tests.test_storage ids.tests.test_config -v
 ```
 
-Detector tests build `PacketEvent`s by hand, so no capture, GUI or admin rights are needed. They cover the sliding window and cooldown (expiry, idle-key cleanup, memory caps) and each detector's positive and negative cases (below threshold, slow scans outside the window, IPv6, spoofed sources, ARP probes).
+Detector tests build `PacketEvent`s by hand, so no capture, GUI or admin rights are needed. They cover the sliding window and cooldown (expiry, idle-key cleanup, memory caps) and each detector's positive and negative cases (below threshold, slow scans outside the window, IPv6, spoofed sources, ARP probes). Further tests cover SQLite storage and config validation.
 
 ### Reproducing the attack tests
 
@@ -159,12 +165,13 @@ Stated plainly, so the scope is clear:
 - **Brute-force detection is connection-rate based.** It counts SYNs to login ports, not failed authentications. Tools that reuse one connection can slip past it, and a legitimate script opening many connections can trigger it.
 - **ARP spoofing detection is first-seen-wins.** A legitimate MAC change (new NIC, failover, DHCP churn) will alert, and an attack that happens before Horus has learned the mapping will not.
 - **Detect only.** Horus raises alerts; it does not block anything.
-- **No alert persistence yet.** Alerts live in the dashboard and CSV export.
+- **No way to browse saved alerts in the GUI yet.** Alerts are stored in `horus.db`, but the dashboard only shows the current run.
 - Thresholds were tuned on a small lab network, not production traffic.
 
 ## Roadmap
 
-- [ ] SQLite storage for alerts, with search and filtering
+- [x] SQLite storage for alerts
+- [ ] Alert history view in the GUI, with search and filtering
 - [ ] DNS anomaly detection (the parser already extracts DNS queries)
 - [ ] Payload signature matching
 - [ ] ICMP-based detections (sweeps, floods)
@@ -173,7 +180,7 @@ Stated plainly, so the scope is clear:
 
 ## Tech stack
 
-Python · Scapy · PyYAML · Tkinter · unittest
+Python · Scapy · PyYAML · Tkinter · SQLite · unittest
 
 ## Disclaimer
 
