@@ -34,14 +34,14 @@ def process_event(event):
     attempt_count = recent_attempts.count(key)
 
     if attempt_count >= ATTEMPT_THRESHOLD and cooldown.allow(key, now):
-        raise_alert(event.src_ip, event.dst_port, attempt_count)
+        raise_alert(event.src_ip, event.dst_ip, event.dst_port, attempt_count)
 
 
-def raise_alert(src_ip, dst_port, count):
+def raise_alert(src_ip, dst_ip, dst_port, count):
     emit("Brute force", "HIGH", src_ip,
          f"{count} connection attempts made to port {dst_port} in the last "
-         f"{int(TIME_WINDOW.total_seconds())}",
-         dst_port=dst_port,
+         f"{int(TIME_WINDOW.total_seconds())}s",
+         target=dst_ip, dst_port=dst_port,
          details={"attempts": count,
                   "window_seconds": TIME_WINDOW.total_seconds()})
 

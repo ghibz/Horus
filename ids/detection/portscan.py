@@ -35,13 +35,14 @@ def process_event(event):
 
     # decision point, if number of distinct ports is over threshold, raise alert
     if port_count >= PORT_THRESHOLD and cooldown.allow(src, now):
-        raise_alert(src, port_count)
+        raise_alert(src, event.dst_ip, port_count)
 
 
-def raise_alert(src_ip, port_count):
+def raise_alert(src_ip, dst_ip, port_count):
     emit("Port scan", "MEDIUM", src_ip,
          f"{port_count} distinct ports touched in the last "
          f"{int(TIME_WINDOW.total_seconds())}s",
+         target=dst_ip,
          details={"distinct_ports": port_count,
                   "window_seconds": TIME_WINDOW.total_seconds()})
 
