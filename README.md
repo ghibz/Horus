@@ -4,7 +4,7 @@
 
 Horus captures live traffic with Scapy, normalises every packet into a structured event, and runs it through a set of rule-based detectors. Alerts are shown in a real-time desktop dashboard, saved to a local SQLite database, and can be exported to CSV.
 
-<img width="1079" height="725" alt="Horus_GUI" src="https://github.com/user-attachments/assets/79fb62d1-385c-454f-b24b-8e7baf0403a1" />
+<img width="1077" height="725" alt="Horus_Dashboard" src="https://github.com/user-attachments/assets/779b621c-ee3d-48d1-b31d-e4e880502f69" />
 
 > **Status:** active personal project. Built to understand how network attacks look on the wire and how detection logic works, not as a replacement for Snort, Suricata or Zeek. See [Limitations](#limitations).
 
