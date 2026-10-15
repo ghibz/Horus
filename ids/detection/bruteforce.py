@@ -53,6 +53,7 @@ Requires following setup:
 1.ids/scripts/enable_ssh_test.ps1 -> enable SSH server and service
 
 2.Conduct the test
+2.5 sudo gunzip -k /usr/share/wordlists/rockyou.txt.gz
 
 3.ids/scripts/disable_ssh_test.ps1 -> disable SSH server and service
 """
