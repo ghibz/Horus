@@ -4,7 +4,7 @@
 
 Horus captures live traffic with Scapy, normalises every packet into a structured event, and runs it through a set of rule-based detectors. Alerts are shown in a real-time desktop dashboard, saved to a local SQLite database, and can be exported to CSV.
 
-<img width="1079" height="725" alt="Horus_GUI" src="https://github.com/user-attachments/assets/79fb62d1-385c-454f-b24b-8e7baf0403a1" />
+<img width="1077" height="725" alt="Horus_Dashboard" src="https://github.com/user-attachments/assets/779b621c-ee3d-48d1-b31d-e4e880502f69" />
 
 > **Status:** active personal project. Built to understand how network attacks look on the wire and how detection logic works, not as a replacement for Snort, Suricata or Zeek. See [Limitations](#limitations).
 
@@ -13,7 +13,7 @@ Horus captures live traffic with Scapy, normalises every packet into a structure
 ## Features
 
 - **Live packet capture** on a selectable interface (Scapy `AsyncSniffer`, runs in its own thread).
-- **Six detectors**, each validated against a real attack tool (see below).
+- **Seven detectors**, each validated against a real attack tool (see below).
 - **IPv4 and IPv6 support** in the parser and in the detectors that don't depend on ARP.
 - **Memory-bounded detection state:** a flood of spoofed source IPs cannot exhaust RAM.
 - **YAML-configurable thresholds**, with strict validation: typos and nonsense values are rejected with a clear error instead of silently weakening detection.
@@ -29,6 +29,7 @@ Horus captures live traffic with Scapy, normalises every packet into a structure
 | **UDP scan** | One source hitting many distinct UDP ports in a short window | MEDIUM | `nmap -sU -Pn -p 1-1000 <target>` |
 | **SYN flood** | Many SYNs arriving at one *target* (dst IP + port), regardless of source | HIGH | `hping3 -S -p <port> --flood <target>` |
 | **ICMP flood** | Many ICMP echo requests (pings) arriving at one *target*, regardless of source | HIGH | `hping3 --icmp --flood <target>` |
+   | **Unusual ICMP** | ICMP timestamp, information or address-mask requests: rarely legitimate today, and used to probe hosts | LOW | `hping3 --icmp --icmptype 13 -c 3 <target>` |
 | **Brute force** | Many connection attempts from one source to a login port (SSH, FTP, Telnet, RDP) | HIGH | `hydra -l root -P rockyou.txt ssh://<target>` |
 | **ARP spoofing** | An IP address suddenly claimed by a different MAC than the one first seen | HIGH | `arpspoof -i <iface> -t <target> <gateway>` |
 
@@ -39,13 +40,14 @@ A few design decisions worth noting:
 - **SYN flood is keyed on the victim, not the attacker.** A flood with spoofed random sources still piles up on one `(dst_ip, dst_port)`, so it is detected where a per-source counter would miss it.
 - **Only pure SYN packets (`flags == "S"`) count** for scan, flood and brute-force logic, so normal SYN-ACK replies don't inflate the counters. In the same way, the ICMP flood detector counts only echo *requests* (type 8), never replies.
 - **ARP probes (sender `0.0.0.0`) are ignored**, since they are not real IP-to-MAC mappings and would cause false positives.
+- **Unusual ICMP is deliberately LOW severity.** A single odd packet is a hint that someone is probing, not proof of an attack. It watches requests only (types 13, 15, 17), never the replies, so Horus never alerts about its own host answering.
 - **Every alert has a per-key cooldown**, so one attack produces one alert rather than thousands.
 
 ## Architecture
 
 ```
  network ──► sniffer ──► parser ──► detectors ──► alerts.emit() ──► subscribers
-            (Scapy)    PacketEvent  (6 modules)                      ├─ console
+            (Scapy)    PacketEvent  (7 modules)                      ├─ console
                                                                      ├─ GUI (via queue)
                                                                      └─ SQLite (via queue + writer thread)
 ```
@@ -69,6 +71,7 @@ Horus/
 │   │   ├── udp_portscan.py
 │   │   ├── syn_flood.py
 │   │   ├── icmp_flood.py
+│   │   ├── icmp_unusual.py
 │   │   ├── bruteforce.py
 │   │   ├── arp_spoof.py
 │   │   └── addr.py          # IPv4/IPv6 endpoint formatting
@@ -139,7 +142,7 @@ brute_force:
   ports: [22, 21, 23, 3389]   # SSH, FTP, Telnet, RDP
 ```
 
-Sections: `port_scan`, `udp_scan`, `syn_flood`, `icmp_flood`, `brute_force`, `arp_spoof`. These thresholds suit a small lab network; busy networks will need tuning.
+Sections: `port_scan`, `udp_scan`, `syn_flood`, `icmp_flood`, `icmp_unusual`, `brute_force`, `arp_spoof`. These thresholds suit a small lab network; busy networks will need tuning.
 
 ### Tests
 
@@ -167,6 +170,7 @@ Stated plainly, so the scope is clear:
 - **Brute-force detection is connection-rate based.** It counts SYNs to login ports, not failed authentications. Tools that reuse one connection can slip past it, and a legitimate script opening many connections can trigger it.
 - **ARP spoofing detection is first-seen-wins.** A legitimate MAC change (new NIC, failover, DHCP churn) will alert, and an attack that happens before Horus has learned the mapping will not.
 - **ICMP detection is IPv4 only.** The parser does not recognise ICMPv6 yet, so an IPv6 ping flood is not detected. Ping *sweeps* are not detected either.
+- **The unusual-ICMP detector is informational.** Some network tools do send timestamp requests, so a LOW alert is a hint to look, not a verdict.
 - **Detect only.** Horus raises alerts; it does not block anything.
 - **No way to browse saved alerts in the GUI yet.** Alerts are stored in `horus.db`, but the dashboard only shows the current run.
 - Thresholds were tuned on a small lab network, not production traffic.
