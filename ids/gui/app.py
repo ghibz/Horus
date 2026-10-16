@@ -23,6 +23,7 @@ AUTO = "Auto (default)"
 POLL_MS = 200        # how often the GUI checks for new alerts
 MAX_PER_TICK = 100   # cap per poll so an alert storm can't freeze the window
 MAX_ROWS = 2000      # cap on rows kept in the table
+STALL_SECONDS = 30   # no packets for this long -> warn that capture may be dead
 FONT = "Segoe UI"
 
 # lapis and gold
@@ -37,6 +38,7 @@ C = {
     "accent_hover": "#e3b658",
     "on_accent": "#0d1826",
     "ok": "#3fb37f",
+    "bad": "#e05260",
 }
 # Row tint per severity (text stays readable); LOW has no tint
 SEVERITY_TINT = {"HIGH": "#3a2230", "MEDIUM": "#33301f", "LOW": "#1b3a5c"}
@@ -57,6 +59,9 @@ class HorusApp(tk.Tk):
 
         self.sniffer = None
         self.started_at = None
+        self._last_packets = 0       # capture watchdog state
+        self._last_packet_time = 0.0
+        self._stalled = False
         self.alert_count = 0
         self.high_count = 0
 
@@ -268,24 +273,59 @@ class HorusApp(tk.Tk):
             return
 
         self.started_at = time.time()
+        self._last_packets = 0
+        self._last_packet_time = self.started_at
+        self._stalled = False
         self._set_running(True)
-        # errors such as missing privileges only show up once the thread runs
-        self.after(800, self._verify_started)
 
-    def _verify_started(self):
-        if self.sniffer is None:
-            return
+    # ---------------------------------------------------- capture watchdog
+    def _capture_failure(self):
+        """Reason string if the sniffer thread has died, else None."""
         # scapy leaves .running True after a failed start, so check the thread
         reason = getattr(self.sniffer, "exception", None)
         thread = getattr(self.sniffer, "thread", None)
-        if reason is not None or (thread is not None and not thread.is_alive()):
-            self.stop()
-            messagebox.showerror(
-                "Horus",
-                "Capture stopped right after starting.\n\n"
-                "Run Horus as Administrator (Windows, with Npcap installed) "
-                "or with sudo (Linux), then try again.\n\n"
-                f"Details: {reason}")
+        if reason is not None:
+            return repr(reason)
+        if thread is not None and not thread.is_alive():
+            return "the capture thread ended"
+        return None
+
+    def _check_capture(self):
+        # called every poll: an IDS that silently stops capturing is worse than a crash
+        if self.sniffer is None:
+            return
+        reason = self._capture_failure()
+        if reason:
+            self._capture_lost(reason)
+            return
+
+        packets, now = capture.stats["packets"], time.time()
+        if packets != self._last_packets:
+            self._last_packets, self._last_packet_time = packets, now
+            if self._stalled:
+                self._stalled = False
+                self._show_listening()
+        elif not self._stalled and now - self._last_packet_time > STALL_SECONDS:
+            # a quiet network is possible, so only warn; don't stop
+            self._stalled = True
+            self.status_lbl.configure(text="● No traffic", fg=C["accent"])
+            self.status_var.set(
+                f"No packets seen for {STALL_SECONDS}s on {self.iface_var.get()}. "
+                "Wrong interface, or did the adapter go down?")
+
+    def _capture_lost(self, reason):
+        early = self.started_at is not None and time.time() - self.started_at < 5
+        msg = f"Capture stopped unexpectedly: {reason}"
+        # emitted before stop() so it reaches the table and the database
+        alerts.emit("Capture lost", "HIGH", "Horus", msg)
+        self.stop()
+        self.status_lbl.configure(text="● Capture lost", fg=C["bad"])
+        self.status_var.set(msg)
+        hint = ("Run Horus as Administrator (Windows, with Npcap installed) "
+                "or with sudo (Linux), then try again."
+                if early else
+                "The interface may have gone down. Check the adapter, then press Start.")
+        messagebox.showerror("Horus", f"{msg}\n\n{hint}")
 
     def stop(self):
         if self.sniffer is not None:
@@ -339,6 +379,7 @@ class HorusApp(tk.Tk):
                 self._add_alert(self.alert_queue.get_nowait())
             except queue.Empty:
                 break
+        self._check_capture()
         self._refresh_stats()
         self.after(POLL_MS, self._poll)
 
@@ -378,11 +419,14 @@ class HorusApp(tk.Tk):
         self.stop_btn.state(["!disabled"] if running else ["disabled"])
         self.iface_box.configure(state="disabled" if running else "readonly")
         if running:
-            self.status_lbl.configure(text="● Listening", fg=C["ok"])
-            self.status_var.set(f"Listening on {self.iface_var.get()}.")
+            self._show_listening()
         else:
             self.status_lbl.configure(text="● Stopped", fg=C["muted"])
             self.status_var.set("Stopped.")
+
+    def _show_listening(self):
+        self.status_lbl.configure(text="● Listening", fg=C["ok"])
+        self.status_var.set(f"Listening on {self.iface_var.get()}.")
 
     def _on_close(self):
         self.stop()
