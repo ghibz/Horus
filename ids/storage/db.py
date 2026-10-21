@@ -14,6 +14,12 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parents[2] / "horus.db"
 
+MAX_QUEUE = 10_000   # alerts waiting for the writer; beyond this they are dropped (and counted)
+
+INSERT_ALERT = (
+    "INSERT INTO alerts (session_id, ts, kind, severity, source, "
+    "target, dst_port, message, details) VALUES (?,?,?,?,?,?,?,?,?)")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id          INTEGER PRIMARY KEY,
@@ -40,6 +46,14 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ts     ON alerts(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_source ON alerts(source);
 CREATE INDEX IF NOT EXISTS idx_alerts_kind   ON alerts(kind);
 """
+
+
+def dumps(obj) -> str:
+    """JSON that never raises: unknown types become strings, the rest falls back to repr."""
+    try:
+        return json.dumps(obj, default=str)
+    except Exception:
+        return json.dumps({"unserializable": repr(obj)})
 
 
 def utc_iso(dt) -> str:
@@ -79,9 +93,20 @@ class AlertStore:
     def __init__(self, path=DB_PATH):
         self.path = path
         self.session_id = None
-        self._queue = queue.Queue()
+        self._queue = queue.Queue(maxsize=MAX_QUEUE)
         self._thread = None
         self._ready = threading.Event()
+        self._stopping = threading.Event()
+        # health, read by the GUI
+        self.error = None      # why the writer thread died, if it did
+        self.dropped = 0       # alerts discarded because the queue was full
+        self.rejected = 0      # alerts the database refused (bad data), skipped
+
+    @property
+    def failed(self) -> bool:
+        """True if the writer thread died while the session was still running."""
+        return (self._thread is not None and not self._thread.is_alive()
+                and not self._stopping.is_set())
 
     def start(self, interface=None, config=None):
         self._thread = threading.Thread(
@@ -90,30 +115,44 @@ class AlertStore:
         self._ready.wait(timeout=5)
 
     def submit(self, alert) -> None:
-        # called on the sniffing thread: must stay instant
-        self._queue.put(alert)
+        # called on the sniffing thread: must stay instant and must never block
+        try:
+            self._queue.put_nowait(alert)
+        except queue.Full:
+            self.dropped += 1
 
     def stop(self) -> None:
         # flush everything still queued, close the session row, close the file
         if self._thread is not None:
-            self._queue.put(None)
+            self._stopping.set()
+            try:
+                self._queue.put_nowait(None)    # wakes an idle writer right away
+            except queue.Full:
+                pass                            # writer is busy, it will see the flag
             self._thread.join(timeout=5)
             self._thread = None
 
     # --------------------------------------------------- writer thread
     def _run(self, interface, config):
-        conn = connect(self.path)
+        conn = None
         try:
+            conn = connect(self.path)
             cur = conn.execute(
                 "INSERT INTO sessions (started_at, interface, config_json) "
                 "VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?)",
-                (interface, json.dumps(config) if config else None))
+                (interface, dumps(config) if config else None))
             self.session_id = cur.lastrowid
             conn.commit()
             self._ready.set()
 
             while True:
-                item = self._queue.get()
+                try:
+                    item = self._queue.get(timeout=0.5)
+                except queue.Empty:
+                    if self._stopping.is_set():
+                        break
+                    continue
+
                 batch = [item]
                 # grab whatever else is waiting so a burst is one transaction
                 while len(batch) < 200:
@@ -122,9 +161,8 @@ class AlertStore:
                     except queue.Empty:
                         break
 
-                stop = None in batch
                 self._insert(conn, [a for a in batch if a is not None])
-                if stop:
+                if self._stopping.is_set() and self._queue.empty():
                     break
 
             conn.execute(
@@ -132,20 +170,43 @@ class AlertStore:
                 "WHERE id = ?", (self.session_id,))
             conn.commit()
         except Exception as exc:
+            self.error = repr(exc)
             print(f"[WARN] Alert database stopped: {exc!r}")
         finally:
             self._ready.set()       # never leave start() waiting
-            conn.close()
+            if conn is not None:
+                conn.close()
+
+    def _to_row(self, a):
+        return (self.session_id, utc_iso(a.timestamp), a.kind, a.severity,
+                a.source, a.target, a.dst_port, a.message,
+                dumps(a.details) if a.details else None)
 
     def _insert(self, conn, alerts):
-        if not alerts:
+        # build rows one by one: a single malformed alert must not sink the batch
+        rows = []
+        for a in alerts:
+            try:
+                rows.append(self._to_row(a))
+            except Exception as exc:
+                self._reject(exc)
+        if not rows:
             return
-        rows = [(self.session_id, utc_iso(a.timestamp), a.kind, a.severity,
-                 a.source, a.target, a.dst_port, a.message,
-                 json.dumps(a.details) if a.details else None)
-                for a in alerts]
-        with conn:
-            conn.executemany(
-                "INSERT INTO alerts (session_id, ts, kind, severity, source, "
-                "target, dst_port, message, details) VALUES (?,?,?,?,?,?,?,?,?)",
-                rows)
+
+        try:
+            with conn:
+                conn.executemany(INSERT_ALERT, rows)
+        except Exception:
+            # the whole batch was rolled back because of (at least) one bad row:
+            # retry row by row so only the offender is lost
+            for row in rows:
+                try:
+                    with conn:
+                        conn.execute(INSERT_ALERT, row)
+                except Exception as exc:
+                    self._reject(exc)
+
+    def _reject(self, exc):
+        self.rejected += 1
+        if self.rejected <= 10 or self.rejected % 100 == 0:   # don't flood the console
+            print(f"[WARN] Alert not saved ({self.rejected} so far): {exc!r}")

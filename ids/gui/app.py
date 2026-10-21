@@ -56,6 +56,7 @@ class HorusApp(tk.Tk):
         alerts.subscribe(self.alert_queue.put)
         alerts.subscribe(self._store_alert)   # saves to the database
         self.store = None
+        self._db_warned = set()      # which database problems were already reported
 
         self.sniffer = None
         self.started_at = None
@@ -260,6 +261,8 @@ class HorusApp(tk.Tk):
         iface = None if choice == AUTO else choice
 
         capture.stats["packets"] = 0
+        self._db_warned = set()
+        self.title("Horus IDS")
         self.store = AlertStore()
         self.store.start(interface=iface, config={
             name: config.get(name) for name in config.DEFAULTS})
@@ -380,6 +383,7 @@ class HorusApp(tk.Tk):
             except queue.Empty:
                 break
         self._check_capture()
+        self._check_store()
         self._refresh_stats()
         self.after(POLL_MS, self._poll)
 
@@ -396,6 +400,29 @@ class HorusApp(tk.Tk):
         if alert.severity == "HIGH":
             self.high_count += 1
         self._update_empty_state()
+
+    def _check_store(self):
+        # the table keeps filling even if the database is dead, so say it out loud
+        store = self.store
+        if store is None:
+            return
+        problems = []
+        if store.failed:
+            problems.append(("died", f"The alert database stopped ({store.error}). "
+                                     "New alerts are NOT being saved."))
+        if store.dropped:
+            problems.append(("dropped", f"The alert database can't keep up: "
+                                        f"{store.dropped} alerts were not saved."))
+        if store.rejected:
+            problems.append(("rejected", f"{store.rejected} alerts were refused by the "
+                                         "database and not saved."))
+        for key, msg in problems:
+            if key in self._db_warned:
+                continue
+            self._db_warned.add(key)
+            alerts.emit("Database error", "HIGH", "Horus", msg)
+            self.status_var.set(msg)
+            self.title("Horus IDS - DATABASE PROBLEM")
 
     def _update_empty_state(self):
         if self.tree.get_children():

@@ -21,6 +21,8 @@ class Alert:
     details: Optional[dict] = None     # detector-specific extras (stored as JSON)
 
 
+SEVERITIES = ("LOW", "MEDIUM", "HIGH")   # must match the CHECK constraint in storage/db.py
+
 _subscribers: List[Callable[[Alert], None]] = []
 
 
@@ -32,6 +34,12 @@ def subscribe(callback: Callable[[Alert], None]) -> None:
 def emit(kind: str, severity: str, source, message: str,
          target=None, dst_port=None, details=None) -> Alert:
     """Create an alert, print it to the console and hand it to subscribers."""
+    # a bad severity would be rejected by the database, so fix it at the source
+    severity = str(severity).upper()
+    if severity not in SEVERITIES:
+        print(f"[WARN] Unknown severity {severity!r} on a '{kind}' alert, using MEDIUM")
+        severity = "MEDIUM"
+
     alert = Alert(kind, severity, str(source), message,
                   target=None if target is None else str(target),
                   dst_port=dst_port, details=details)
@@ -44,4 +52,3 @@ def emit(kind: str, severity: str, source, message: str,
             print(f"[WARN] Alert subscriber failed: {exc!r}")
 
     return alert
-

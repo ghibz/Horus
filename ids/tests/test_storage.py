@@ -71,6 +71,71 @@ class StorageTests(unittest.TestCase):
                          "VALUES ('t','k','BOGUS','m')")
         conn.close()
 
+    # ---- one bad alert must not kill the writer ----
+    def test_unserializable_details_do_not_kill_the_writer(self):
+        store = self.run_store([
+            Alert("k", "LOW", "s", "bad", details={"x": {1, 2}}),   # a set
+            Alert("Port scan", "MEDIUM", "10.0.0.5", "ok 1"),
+            Alert("Port scan", "MEDIUM", "10.0.0.5", "ok 2"),
+        ])
+        rows = db.recent_alerts(self.path)
+        self.assertEqual(len(rows), 3)          # default=str saved the set as text
+        self.assertIsNone(store.error)
+
+    def test_bad_severity_skips_only_that_alert(self):
+        store = self.run_store([
+            Alert("k", "CRITICAL", "s", "bad"),                      # CHECK constraint fails
+            Alert("Port scan", "MEDIUM", "10.0.0.5", "ok 1"),
+            Alert("Port scan", "MEDIUM", "10.0.0.5", "ok 2"),
+        ])
+        rows = db.recent_alerts(self.path)
+        self.assertEqual(sorted(r["message"] for r in rows), ["ok 1", "ok 2"])
+        self.assertEqual(store.rejected, 1)
+        self.assertIsNone(store.error)
+        self.assertFalse(store.failed)
+
+    def test_bad_timestamp_skips_only_that_alert(self):
+        store = self.run_store([
+            Alert("k", "LOW", "s", "bad", timestamp="not a datetime"),
+            Alert("Port scan", "MEDIUM", "10.0.0.5", "ok"),
+        ])
+        self.assertEqual(len(db.recent_alerts(self.path)), 1)
+        self.assertEqual(store.rejected, 1)
+
+    def test_session_is_closed_even_after_bad_alerts(self):
+        store = self.run_store([Alert("k", "CRITICAL", "s", "bad")])
+        conn = db.connect(self.path)
+        row = conn.execute("SELECT ended_at FROM sessions WHERE id = ?",
+                           (store.session_id,)).fetchone()
+        conn.close()
+        self.assertIsNotNone(row["ended_at"])
+
+    def test_queue_is_bounded_and_drops_are_counted(self):
+        store = db.AlertStore(self.path)       # never started: nothing drains the queue
+        for _ in range(db.MAX_QUEUE + 50):
+            store.submit(Alert("Port scan", "MEDIUM", "10.0.0.5", "x"))
+        self.assertEqual(store.dropped, 50)
+
+    def test_failed_is_true_when_the_writer_dies(self):
+        store = db.AlertStore(os.path.join(self.path, "nope", "x.db"))   # can't be opened
+        store.start()
+        store._thread.join(timeout=2)
+        self.assertTrue(store.failed)
+        self.assertIsNotNone(store.error)
+
+
+class EmitSeverityTests(unittest.TestCase):
+    def test_unknown_severity_becomes_medium(self):
+        from ids import alerts
+        seen = []
+        alerts.subscribe(seen.append)
+        try:
+            alerts.emit("k", "critical!", "src", "m")
+            alerts.emit("k", "high", "src", "m")
+        finally:
+            alerts._subscribers.remove(seen.append)
+        self.assertEqual([a.severity for a in seen], ["MEDIUM", "HIGH"])
+
 
 if __name__ == "__main__":
     unittest.main()
