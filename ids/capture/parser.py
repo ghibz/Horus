@@ -22,7 +22,7 @@ class PacketEvent:
 
     src_port: Optional[int] = None
     dst_port: Optional[int] = None
-    flags: Optional[str] = None
+    flags: Optional[int] = None
 
     icmp_type: Optional[int] = None
     icmp_code: Optional[int] = None
@@ -80,7 +80,7 @@ def extract_tcp_fields(pkt) -> dict:
     tcp_layer = pkt[TCP]  # Store the entire TCP info in a variable
     fields["src_port"] = tcp_layer.sport  # Extract Source port from TCP
     fields["dst_port"] = tcp_layer.dport  # Extract Destination port from TCP
-    fields["flags"] = str(tcp_layer.flags)  # Extract Flags from TCP
+    fields["flags"] = int(tcp_layer.flags)  # Extract Flags from TCP
 
     return fields
 

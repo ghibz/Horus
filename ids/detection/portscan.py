@@ -3,6 +3,7 @@ from datetime import timedelta
 from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
+from ids.detection.tcpflags import is_syn_only
 
 # thresholds come from config.yaml (section: port_scan)
 _cfg = config.get("port_scan")
@@ -19,7 +20,7 @@ def process_event(event):
     # early exits, no TCP or SYN packets
     if event.protocol != "TCP":
         return
-    if event.flags != "S":
+    if not is_syn_only(event.flags):
         return
 
     # no IPv4 source (e.g. IPv6 traffic): nothing to attribute the scan to

@@ -4,6 +4,7 @@ from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
 from ids.detection.addr import format_endpoint
+from ids.detection.tcpflags import is_syn_only
 
 # thresholds come from config.yaml (section: syn_flood)
 _cfg = config.get("syn_flood")
@@ -21,7 +22,7 @@ def process_event(event):
     # way-out if Protocol isn't TCP or no SYN flags
     if event.protocol != "TCP":
         return
-    if event.flags != "S":
+    if not is_syn_only(event.flags):
         return
 
     # no IPv4 addresses (e.g. IPv6 traffic): can't attribute it

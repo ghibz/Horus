@@ -14,6 +14,30 @@ from ids.detection.window import Cooldown, SlidingWindow
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 
+# raw TCP flag bits (what PacketEvent.flags now holds)
+FIN, SYN, RST, PSH, ACK, URG, ECE, CWR = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
+
+# SYN set, ACK clear: all of these are connection attempts and must be counted,
+# including the ECN-setup SYN (SEC) that macOS/iOS send and that crafted
+# packets (hping3 -S -X -Y) use to dodge an exact "== S" match
+SYN_VARIANTS = {
+    "plain SYN": SYN,
+    "ECN-setup SYN (SEC)": SYN | ECE | CWR,
+    "SYN+ECE": SYN | ECE,
+    "SYN+PSH+URG": SYN | PSH | URG,
+    "SYN+FIN": SYN | FIN,
+}
+
+# these must never be counted as a connection attempt
+NOT_SYN = {
+    "SYN-ACK": SYN | ACK,
+    "ECN-setup SYN-ACK": SYN | ACK | ECE,
+    "ACK": ACK,
+    "FIN": FIN,
+    "RST": RST,
+    "NULL": 0,
+}
+
 # every alert raised during a test lands here
 RAISED = []
 alerts.subscribe(RAISED.append)
@@ -23,7 +47,7 @@ def at(seconds):
     return T0 + timedelta(seconds=seconds)
 
 
-def tcp(seconds, src="10.0.0.5", dst="10.0.0.1", dport=80, flags="S"):
+def tcp(seconds, src="10.0.0.5", dst="10.0.0.1", dport=80, flags=SYN):
     return PacketEvent(timestamp=at(seconds), protocol="TCP", src_ip=src,
                        dst_ip=dst, dst_port=dport, flags=flags)
 
@@ -127,7 +151,33 @@ class PortScanTests(unittest.TestCase):
 
     def test_only_pure_syn_counts(self):
         for port in range(1, 41):
-            portscan.process_event(tcp(port * 0.01, dport=port, flags="SA"))
+            portscan.process_event(tcp(port * 0.01, dport=port, flags=SYN | ACK))
+        self.assertEqual(RAISED, [])
+
+    def test_syn_with_extra_flags_still_counts(self):
+        for name, flags in SYN_VARIANTS.items():
+            with self.subTest(flags=name):
+                portscan.recent_ports.clear()
+                portscan.cooldown.clear()
+                RAISED.clear()
+                for port in range(1, 41):
+                    portscan.process_event(tcp(port * 0.01, dport=port, flags=flags))
+                self.assertEqual(len(RAISED), 1)
+                self.assertEqual(RAISED[0].kind, "Port scan")
+
+    def test_non_syn_packets_are_ignored(self):
+        for name, flags in NOT_SYN.items():
+            with self.subTest(flags=name):
+                portscan.recent_ports.clear()
+                portscan.cooldown.clear()
+                RAISED.clear()
+                for port in range(1, 41):
+                    portscan.process_event(tcp(port * 0.01, dport=port, flags=flags))
+                self.assertEqual(RAISED, [])
+
+    def test_missing_flags_are_ignored(self):
+        for port in range(1, 41):
+            portscan.process_event(tcp(port * 0.01, dport=port, flags=None))
         self.assertEqual(RAISED, [])
 
     def test_ipv6_scanner_is_detected(self):
@@ -207,6 +257,32 @@ class SynFloodTests(unittest.TestCase):
             syn_flood.process_event(tcp(i * 0.01, dst=None))
         self.assertEqual(RAISED, [])
 
+    def test_syn_with_extra_flags_still_counts(self):
+        for name, flags in SYN_VARIANTS.items():
+            with self.subTest(flags=name):
+                syn_flood.recent_syns.clear()
+                syn_flood.cooldown.clear()
+                RAISED.clear()
+                for i in range(120):
+                    syn_flood.process_event(tcp(i * 0.01, flags=flags))
+                self.assertEqual(len(RAISED), 1)
+                self.assertEqual(RAISED[0].kind, "SYN flood")
+
+    def test_non_syn_packets_are_ignored(self):
+        for name, flags in NOT_SYN.items():
+            with self.subTest(flags=name):
+                syn_flood.recent_syns.clear()
+                syn_flood.cooldown.clear()
+                RAISED.clear()
+                for i in range(120):
+                    syn_flood.process_event(tcp(i * 0.01, flags=flags))
+                self.assertEqual(RAISED, [])
+
+    def test_missing_flags_are_ignored(self):
+        for i in range(120):
+            syn_flood.process_event(tcp(i * 0.01, flags=None))
+        self.assertEqual(RAISED, [])
+
 
 class BruteForceTests(unittest.TestCase):
     def setUp(self):
@@ -241,7 +317,33 @@ class BruteForceTests(unittest.TestCase):
 
     def test_only_pure_syn_counts(self):
         for i in range(30):
-            bruteforce.process_event(tcp(i * 0.1, dport=22, flags="SA"))
+            bruteforce.process_event(tcp(i * 0.1, dport=22, flags=SYN | ACK))
+        self.assertEqual(RAISED, [])
+
+    def test_syn_with_extra_flags_still_counts(self):
+        for name, flags in SYN_VARIANTS.items():
+            with self.subTest(flags=name):
+                bruteforce.recent_attempts.clear()
+                bruteforce.cooldown.clear()
+                RAISED.clear()
+                for i in range(30):
+                    bruteforce.process_event(tcp(i * 0.1, dport=22, flags=flags))
+                self.assertEqual(len(RAISED), 1)
+                self.assertEqual(RAISED[0].kind, "Brute force")
+
+    def test_non_syn_packets_are_ignored(self):
+        for name, flags in NOT_SYN.items():
+            with self.subTest(flags=name):
+                bruteforce.recent_attempts.clear()
+                bruteforce.cooldown.clear()
+                RAISED.clear()
+                for i in range(30):
+                    bruteforce.process_event(tcp(i * 0.1, dport=22, flags=flags))
+                self.assertEqual(RAISED, [])
+
+    def test_missing_flags_are_ignored(self):
+        for i in range(30):
+            bruteforce.process_event(tcp(i * 0.1, dport=22, flags=None))
         self.assertEqual(RAISED, [])
 
     def test_ports_are_counted_separately(self):

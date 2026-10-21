@@ -3,6 +3,7 @@ from datetime import timedelta
 from ids import config
 from ids.alerts import emit
 from ids.detection.window import Cooldown, SlidingWindow
+from ids.detection.tcpflags import is_syn_only
 
 # thresholds come from config.yaml (section: brute_force)
 _cfg = config.get("brute_force")
@@ -20,7 +21,7 @@ def process_event(event):
     if event.protocol != "TCP":
         return
     # decision based only on the first SYN packet
-    if event.flags != "S":
+    if not is_syn_only(event.flags):
         return
     if event.dst_port not in AUTH_PORTS:
         return
