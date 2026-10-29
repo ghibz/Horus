@@ -263,8 +263,10 @@ class HorusApp(tk.Tk):
         choice = self.iface_var.get()
         iface = None if choice == AUTO else choice
 
-        capture.stats["packets"] = 0
-        capture.reset_detectors()    # fresh start: nothing learned in an earlier session
+        # fresh start: packet counter at zero, nothing learned in an earlier
+        # session (the old sniffer was deactivated by stop(), so a late packet
+        # from it can't leak into this one)
+        capture.begin_session()
         self._db_warned = set()
         self.title("Horus IDS")
         self.store = AlertStore()
@@ -274,6 +276,7 @@ class HorusApp(tk.Tk):
             self.sniffer = capture.create_sniffer(iface)
             self.sniffer.start()
         except Exception as exc:
+            capture.deactivate_sniffer()
             self._close_store()
             self.sniffer = None
             messagebox.showerror("Horus", f"Capture could not start.\n\n{exc}")
@@ -335,6 +338,9 @@ class HorusApp(tk.Tk):
         messagebox.showerror("Horus", f"{msg}\n\n{hint}")
 
     def stop(self):
+        # first cut the sniffer off from the detectors: its thread may need a
+        # moment to die, but nothing it still delivers is processed any more
+        capture.deactivate_sniffer()
         if self.sniffer is not None:
             try:
                 if self.sniffer.running:

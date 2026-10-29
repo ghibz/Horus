@@ -1,4 +1,3 @@
-
 """Run from the project root:  python -m unittest ids.tests.test_sniffer -v
 
 Checks that the sniffer
@@ -220,6 +219,85 @@ class ResetTests(unittest.TestCase):
             sniffer.reset_detectors()
         self.assertEqual(cleared, ["healthy"])
         self.assertIn("Could not reset detector 'broken'", out.getvalue())
+
+
+class StartStopRaceTests(unittest.TestCase):
+    """Stopping a sniffer is asynchronous: its thread can still deliver packets
+    after Stop. Those must never reach a later session."""
+
+    def setUp(self):
+        sniffer.begin_session()
+
+    def tearDown(self):
+        sniffer.deactivate_sniffer()
+        sniffer.begin_session()
+
+    def make_callback(self):
+        # the callback scapy would call, taken from a fake AsyncSniffer
+        with mock.patch.object(sniffer, "AsyncSniffer") as fake:
+            sniffer.create_sniffer("eth0")
+        return fake.call_args.kwargs["prn"]
+
+    def deliver(self, callback, n=1):
+        with mock.patch.object(sniffer, "parse_packet", return_value=event()), \
+                mock.patch.object(sniffer, "DETECTORS", []):
+            for _ in range(n):
+                callback(object())
+
+    def test_active_sniffer_is_processed(self):
+        callback = self.make_callback()
+        self.deliver(callback, 3)
+        self.assertEqual(sniffer.stats["packets"], 3)
+
+    def test_packets_after_stop_are_ignored(self):
+        callback = self.make_callback()
+        self.deliver(callback, 2)
+        sniffer.deactivate_sniffer()
+        self.deliver(callback, 5)           # late packets from the dying thread
+        self.assertEqual(sniffer.stats["packets"], 2)
+
+    def test_old_sniffer_cannot_feed_the_new_session(self):
+        old = self.make_callback()
+        sniffer.deactivate_sniffer()        # Stop
+        sniffer.begin_session()             # Start: counters + detectors wiped
+        new = self.make_callback()
+        self.deliver(old, 5)                # old thread still alive
+        self.deliver(new, 1)
+        self.assertEqual(sniffer.stats["packets"], 1)
+
+    def test_old_sniffer_is_silenced_by_a_newer_one_even_without_stop(self):
+        old = self.make_callback()
+        new = self.make_callback()
+        self.deliver(old, 4)
+        self.deliver(new, 2)
+        self.assertEqual(sniffer.stats["packets"], 2)
+
+    def test_late_packets_cannot_trigger_alerts_in_the_new_session(self):
+        old = self.make_callback()
+        sniffer.deactivate_sniffer()
+        sniffer.begin_session()
+        RAISED.clear()
+        with redirect_stdout(io.StringIO()):
+            for kind, attack in ATTACKS.items():
+                events = attack()
+                with mock.patch.object(sniffer, "parse_packet", side_effect=events):
+                    for _ in events:
+                        old(object())
+        self.assertEqual(RAISED, [])
+
+    def test_begin_session_resets_counter_and_detectors(self):
+        sniffer.stats["packets"] = 99
+        with redirect_stdout(io.StringIO()):
+            for e in ATTACKS["ARP spoof"]():
+                sniffer.handle_packet_event(e)
+        self.assertEqual(count("ARP spoof"), 1)
+        sniffer.begin_session()
+        self.assertEqual(sniffer.stats["packets"], 0)
+        self.assertEqual(len(arp_spoof.known_mappings), 0)
+
+    def test_deactivate_without_a_sniffer_is_harmless(self):
+        sniffer.deactivate_sniffer()
+        sniffer.deactivate_sniffer()
 
 
 if __name__ == "__main__":

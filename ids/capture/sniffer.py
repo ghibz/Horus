@@ -1,3 +1,4 @@
+import threading
 import time
 
 from scapy.all import AsyncSniffer, conf, get_if_list, sniff
@@ -31,6 +32,18 @@ stats = {"packets": 0, "detector_errors": {}}
 ERROR_PRINT_INTERVAL = 10.0
 _error_log = {}   # detector name -> [time of last print, failures since then]
 
+# Start/Stop safety. Stopping a scapy sniffer is asynchronous: its thread can
+# still deliver a few packets after stop() returned. Without protection those
+# late packets would land in the NEXT session (after its detectors were reset)
+# and could even raise alerts into the new session's database.
+#   * _active_token  -> identifies the one sniffer allowed to feed the detectors.
+#                       Every sniffer made by create_sniffer() gets its own token;
+#                       stop (or a newer sniffer) invalidates the old one.
+#   * _lock          -> a packet is processed while holding it, and so are resets,
+#                       so a reset can never happen in the middle of a packet.
+_lock = threading.RLock()
+_active_token = None
+
 
 def _report_detector_error(name, exc):
     stats["detector_errors"][name] = stats["detector_errors"].get(name, 0) + 1
@@ -57,12 +70,31 @@ def reset_error_tracking():
 # the failure counters. Called when a new monitoring session starts, so nothing
 # from an earlier session (maybe on another network) leaks into the new one.
 def reset_detectors():
-    for name, _process, reset in DETECTORS:
-        try:
-            reset()
-        except Exception as exc:   # one failing reset must not skip the others
-            print(f"[WARN] Could not reset detector '{name}': {exc!r}")
-    reset_error_tracking()
+    with _lock:
+        for name, _process, reset in DETECTORS:
+            try:
+                reset()
+            except Exception as exc:   # one failing reset must not skip the others
+                print(f"[WARN] Could not reset detector '{name}': {exc!r}")
+        reset_error_tracking()
+
+
+# Everything a new monitoring session starts from: packet counter at zero and
+# every detector wiped. Called by the GUI on Start, after the old sniffer was
+# deactivated.
+def begin_session():
+    with _lock:
+        stats["packets"] = 0
+        reset_detectors()
+
+
+# Called by the GUI on Stop (and when a start fails): from now on the current
+# sniffer's packets are ignored, even if its thread is still winding down.
+# Waits at most for the packet being processed right now.
+def deactivate_sniffer():
+    global _active_token
+    with _lock:
+        _active_token = None
 
 
 # Hands every parsed event to every detector.
@@ -98,7 +130,18 @@ def list_interfaces():
 
 # Background sniffer that can be started and stopped (used by the GUI)
 def create_sniffer(interface=None):
-    return AsyncSniffer(prn=packet_callback, iface=interface, store=False)
+    global _active_token
+    token = object()
+
+    def guarded_callback(pkt):
+        with _lock:
+            if _active_token is not token:
+                return      # stopped, or replaced by a newer sniffer: ignore
+            packet_callback(pkt)
+
+    with _lock:
+        _active_token = token   # also silences any older sniffer still running
+    return AsyncSniffer(prn=guarded_callback, iface=interface, store=False)
 
 
 # Interface set to none (auto-pick) for now, later configured via config.yaml
