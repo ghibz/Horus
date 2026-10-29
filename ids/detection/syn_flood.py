@@ -18,6 +18,12 @@ recent_syns = SlidingWindow(TIME_WINDOW)
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    recent_syns.clear()
+    cooldown.clear()
+
+
 def process_event(event):
     # way-out if Protocol isn't TCP or no SYN flags
     if event.protocol != "TCP":

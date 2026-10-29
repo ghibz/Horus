@@ -2,52 +2,61 @@ from datetime import timedelta
 
 from ids import config
 from ids.alerts import emit
-from ids.detection.window import Cooldown, SlidingWindow
-from ids.detection.tcpflags import is_syn_only
+from ids.detection.window import Cooldown
 
-# thresholds come from config.yaml (section: port_scan)
-_cfg = config.get("port_scan")
-PORT_THRESHOLD = _cfg["threshold"]
-TIME_WINDOW = timedelta(seconds=_cfg["window_seconds"])
-ALERT_COOLDOWN = timedelta(seconds=_cfg["cooldown_seconds"])
+# known IP -> MAC mappings, built as we observe ARP
+known_mappings = {}
 
-# detector's memory: per source IP, the destination ports it has hit recently
-recent_ports = SlidingWindow(TIME_WINDOW)
+# prevents alert spam from spoofing alerts
+ALERT_COOLDOWN = timedelta(seconds=config.get("arp_spoof")["cooldown_seconds"])
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    # the IP -> MAC table belongs to the network we were listening on;
+    # on another network the same IP can legitimately have another MAC
+    known_mappings.clear()
+    cooldown.clear()
+
+
 def process_event(event):
-    # early exits, no TCP or SYN packets
-    if event.protocol != "TCP":
-        return
-    if not is_syn_only(event.flags):
+    # early exit if protocol doesn't match
+    if event.protocol != "ARP":
         return
 
-    # no IPv4 source (e.g. IPv6 traffic): nothing to attribute the scan to
-    if event.src_ip is None or event.dst_port is None:
-        return
-
-    src = event.src_ip
+    ip = event.arp_sender_ip
+    mac = event.arp_sender_mac
     now = event.timestamp
 
-    # records the port under the source IP's history; old entries age out automatically
-    recent_ports.add(src, now, event.dst_port)
-    port_count = recent_ports.distinct(src)
+    # ignore incomplete ARP events
+    if ip is None or mac is None:
+        return
 
-    # decision point, if number of distinct ports is over threshold, raise alert
-    if port_count >= PORT_THRESHOLD and cooldown.allow(src, now):
-        raise_alert(src, event.dst_ip, port_count)
+    # ARP probes (a device checking its address is free) use 0.0.0.0 as the
+    # sender IP; that is not a real IP -> MAC mapping
+    if ip == "0.0.0.0":
+        return
+
+    # retrieve the MAC of the IP entry
+    known_mac = known_mappings.get(ip)
+
+    # if the IP doesn't have a MAC entry (first time), insert the entry
+    if known_mac is None:
+        known_mappings[ip] = mac
+        return
+
+    # actual detection; if the MAC is different from the IP -> MAC entry, raise alert
+    if known_mac != mac and cooldown.allow(ip, now):
+        raise_alert(ip, known_mac, mac)
 
 
-def raise_alert(src_ip, dst_ip, port_count):
-    emit("Port scan", "MEDIUM", src_ip,
-         f"{port_count} distinct ports touched in the last "
-         f"{int(TIME_WINDOW.total_seconds())}s",
-         target=dst_ip,
-         details={"distinct_ports": port_count,
-                  "window_seconds": TIME_WINDOW.total_seconds()})
+def raise_alert(ip, old_mac, new_mac):
+    emit("ARP spoof", "HIGH", ip,
+         f"IP {ip} was {old_mac}, now claimed by {new_mac}",
+         details={"old_mac": old_mac, "new_mac": new_mac})
 
 
 """ TESTED WITH COMMAND :
-### nmap -sS -Pn -p 1-1000 {TARGET_IP}
+### sudo arpspoof -i {interface} -t {TARGET_IP} {ROUTER_IP}
 """

@@ -3,24 +3,21 @@ import time
 from scapy.all import AsyncSniffer, conf, get_if_list, sniff
 
 from ids.capture.parser import parse_packet
-from ids.detection.portscan import process_event as process_portscan_event
-from ids.detection.arp_spoof import process_event as process_arp_event
-from ids.detection.syn_flood import process_event as process_synflood_event
-from ids.detection.udp_portscan import process_event as process_udp_portscan_event
-from ids.detection.bruteforce import process_event as process_bruteforce_event
-from ids.detection.icmp_flood import process_event as process_icmp_flood_event
-from ids.detection.icmp_unusual import process_event as process_icmp_unusual_event
+from ids.detection import (arp_spoof, bruteforce, icmp_flood, icmp_unusual,
+                           portscan, syn_flood, udp_portscan)
 
-# Every detector that receives every parsed event, as (name, function).
-# To add a new detector: import its process_event above and add one line here.
+# Every detector that receives every parsed event, as
+# (name, process_event function, reset function).
+# To add a new detector: import its module above and add one line here.
+# Every detector module needs both process_event() and reset().
 DETECTORS = [
-    ("port scan",    process_portscan_event),
-    ("ARP spoof",    process_arp_event),
-    ("SYN flood",    process_synflood_event),
-    ("UDP scan",     process_udp_portscan_event),
-    ("brute force",  process_bruteforce_event),
-    ("ICMP flood",   process_icmp_flood_event),
-    ("unusual ICMP", process_icmp_unusual_event),
+    ("port scan",    portscan.process_event,      portscan.reset),
+    ("ARP spoof",    arp_spoof.process_event,     arp_spoof.reset),
+    ("SYN flood",    syn_flood.process_event,     syn_flood.reset),
+    ("UDP scan",     udp_portscan.process_event,  udp_portscan.reset),
+    ("brute force",  bruteforce.process_event,    bruteforce.reset),
+    ("ICMP flood",   icmp_flood.process_event,    icmp_flood.reset),
+    ("unusual ICMP", icmp_unusual.process_event,  icmp_unusual.reset),
 ]
 
 # Shared counters, read by the GUI
@@ -56,11 +53,23 @@ def reset_error_tracking():
     _error_log.clear()
 
 
+# Wipes what every detector has learned (counters, cooldowns, the ARP table) and
+# the failure counters. Called when a new monitoring session starts, so nothing
+# from an earlier session (maybe on another network) leaks into the new one.
+def reset_detectors():
+    for name, _process, reset in DETECTORS:
+        try:
+            reset()
+        except Exception as exc:   # one failing reset must not skip the others
+            print(f"[WARN] Could not reset detector '{name}': {exc!r}")
+    reset_error_tracking()
+
+
 # Hands every parsed event to every detector.
 # Each detector runs on its own: if one of them has a bug and raises, the
 # others still get the event, so a single faulty detector can't blind Horus.
 def handle_packet_event(event):
-    for name, process in DETECTORS:
+    for name, process, _reset in DETECTORS:
         try:
             process(event)
         except Exception as exc:

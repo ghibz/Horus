@@ -18,6 +18,12 @@ recent_pings = SlidingWindow(TIME_WINDOW)
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    recent_pings.clear()
+    cooldown.clear()
+
+
 def process_event(event):
     # only ICMP echo requests count; replies would inflate the numbers
     if event.protocol != "ICMP":

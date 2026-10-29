@@ -20,6 +20,11 @@ UNUSUAL_TYPES = {
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    cooldown.clear()
+
+
 def process_event(event):
     if event.protocol != "ICMP":
         return

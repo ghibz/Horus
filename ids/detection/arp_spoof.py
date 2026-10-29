@@ -12,6 +12,14 @@ ALERT_COOLDOWN = timedelta(seconds=config.get("arp_spoof")["cooldown_seconds"])
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    # the IP -> MAC table belongs to the network we were listening on;
+    # on another network the same IP can legitimately have another MAC
+    known_mappings.clear()
+    cooldown.clear()
+
+
 def process_event(event):
     # early exit if protocol doesn't match
     if event.protocol != "ARP":

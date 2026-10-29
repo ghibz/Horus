@@ -15,6 +15,12 @@ recent_ports = SlidingWindow(TIME_WINDOW)
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    recent_ports.clear()
+    cooldown.clear()
+
+
 def process_event(event):
     # early exit in case != UDP packet
     if event.protocol != "UDP":

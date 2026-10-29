@@ -261,6 +261,7 @@ class HorusApp(tk.Tk):
         iface = None if choice == AUTO else choice
 
         capture.stats["packets"] = 0
+        capture.reset_detectors()    # fresh start: nothing learned in an earlier session
         self._db_warned = set()
         self.title("Horus IDS")
         self.store = AlertStore()

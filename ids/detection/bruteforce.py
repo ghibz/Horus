@@ -16,6 +16,12 @@ recent_attempts = SlidingWindow(TIME_WINDOW)
 cooldown = Cooldown(ALERT_COOLDOWN)
 
 
+def reset():
+    # Forget everything learned so far (called when a new monitoring session starts)
+    recent_attempts.clear()
+    cooldown.clear()
+
+
 def process_event(event):
     # All 4 protocol are TCP based
     if event.protocol != "TCP":
