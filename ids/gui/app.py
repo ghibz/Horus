@@ -17,7 +17,7 @@ from ids import alerts
 from ids import config
 from ids.capture import sniffer as capture
 from ids.storage import export
-from ids.storage.db import AlertStore
+from ids.storage.db import DB_PATH, AlertStore, utc_now_iso
 
 AUTO = "Auto (default)"
 POLL_MS = 200        # how often the GUI checks for new alerts
@@ -56,7 +56,12 @@ class HorusApp(tk.Tk):
         alerts.subscribe(self.alert_queue.put)
         alerts.subscribe(self._store_alert)   # saves to the database
         self.store = None
+        self._db_path = DB_PATH
         self._db_warned = set()      # which database problems were already reported
+        # CSV export: everything the database saved since the table was last
+        # emptied (app start or Clear), not just the newest MAX_ROWS rows
+        self._since = utc_now_iso()
+        self._db_lossy = False       # True once the database lost or refused alerts
 
         self.sniffer = None
         self.started_at = None
@@ -269,7 +274,7 @@ class HorusApp(tk.Tk):
         capture.begin_session()
         self._db_warned = set()
         self.title("Horus IDS")
-        self.store = AlertStore()
+        self.store = AlertStore(self._db_path)
         self.store.start(interface=iface, config={
             name: config.get(name) for name in config.DEFAULTS})
         try:
@@ -361,9 +366,21 @@ class HorusApp(tk.Tk):
     def _close_store(self):
         store, self.store = self.store, None
         if store is not None:
+            # checked before stop(): afterwards the writer's state is gone.
+            # A database that lost alerts can't be trusted for the CSV export.
+            if store.failed or store.dropped or store.rejected:
+                self._db_lossy = True
             store.stop()
 
     def clear(self):
+        # the export starts fresh too: only alerts from now on
+        self._since = utc_now_iso()
+        self._db_lossy = False
+        while True:                  # alerts still waiting for the table are dropped too
+            try:
+                self.alert_queue.get_nowait()
+            except queue.Empty:
+                break
         self.tree.delete(*self.tree.get_children())
         self._alert_by_row.clear()
         self.alert_count = 0
@@ -380,7 +397,13 @@ class HorusApp(tk.Tk):
         if not path:
             return
         rows = reversed(self.tree.get_children())               # oldest first
-        to_export = [self._alert_by_row[r] for r in rows if r in self._alert_by_row]
+        table = [self._alert_by_row[r] for r in rows if r in self._alert_by_row]
+        # the table only keeps the newest MAX_ROWS alerts; the database has them
+        # all. Wait for the writer so the very latest alerts are in it as well.
+        if self.store is not None:
+            self.store.flush()
+        to_export, from_db = export.collect_alerts(
+            table, self._db_path, self._since, trusted=not self._db_lossy)
         try:
             export.write_csv(path, to_export)
         except Exception as exc:    # a button must never fail silently
@@ -391,7 +414,8 @@ class HorusApp(tk.Tk):
                 "If the file is open in Excel, close it. Otherwise pick another "
                 "folder or file name.")
             return
-        self.status_var.set(f"Exported {len(to_export)} alerts to {path}")
+        note = "" if from_db else " (only what the table shows: the alert database was not used)"
+        self.status_var.set(f"Exported {len(to_export)} alerts to {path}{note}")
 
     # ------------------------------------------------------------ updates
     def _poll(self):
@@ -427,6 +451,8 @@ class HorusApp(tk.Tk):
         if store is None:
             return
         problems = []
+        if store.failed or store.dropped or store.rejected:
+            self._db_lossy = True
         if store.failed:
             problems.append(("died", f"The alert database stopped ({store.error}). "
                                      "New alerts are NOT being saved."))

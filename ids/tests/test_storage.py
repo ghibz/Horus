@@ -2,7 +2,8 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 from ids.alerts import Alert
 from ids.storage import db
@@ -122,6 +123,47 @@ class StorageTests(unittest.TestCase):
         store._thread.join(timeout=2)
         self.assertTrue(store.failed)
         self.assertIsNotNone(store.error)
+
+    # ---- everything the CSV export needs from the database
+    def test_alerts_since_is_oldest_first_and_filters_by_time(self):
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        self.run_store([Alert("k", "LOW", "s", f"m{i}", timestamp=t0 + timedelta(minutes=i))
+                        for i in (2, 0, 1)])           # saved out of order
+        everything = db.alerts_since(self.path)
+        self.assertEqual([r["message"] for r in everything], ["m0", "m1", "m2"])
+        later = db.alerts_since(self.path, since=db.utc_iso(t0 + timedelta(minutes=1)))
+        self.assertEqual([r["message"] for r in later], ["m1", "m2"])
+
+    def test_alerts_since_is_not_capped_like_the_gui_table(self):
+        self.run_store([Alert("k", "LOW", "s", "x") for _ in range(3000)])
+        self.assertEqual(len(db.alerts_since(self.path)), 3000)
+
+    def test_utc_now_iso_compares_correctly_with_stored_timestamps(self):
+        before = db.utc_now_iso()
+        self.run_store([Alert("k", "LOW", "s", "x")])
+        self.assertEqual(len(db.alerts_since(self.path, since=before)), 1)
+        self.assertEqual(len(db.alerts_since(self.path, since=db.utc_now_iso())), 0)
+
+    def test_flush_makes_queued_alerts_readable_while_running(self):
+        store = db.AlertStore(self.path)
+        store.start()
+        for _ in range(500):
+            store.submit(Alert("k", "LOW", "s", "x"))
+        self.assertTrue(store.flush())
+        self.assertEqual(len(db.alerts_since(self.path)), 500)   # before stop()
+        store.stop()
+
+    def test_flush_on_a_store_that_never_started_returns_at_once(self):
+        self.assertTrue(db.AlertStore(self.path).flush())
+
+    def test_flush_gives_up_when_the_writer_is_dead(self):
+        store = db.AlertStore(os.path.join(self.path, "nope", "x.db"))   # can't be opened
+        store.start()
+        store._thread.join(timeout=2)
+        store.submit(Alert("k", "LOW", "s", "x"))
+        started = time.monotonic()
+        self.assertFalse(store.flush(timeout=3))
+        self.assertLess(time.monotonic() - started, 1)             # did not wait it out
 
 
 class EmitSeverityTests(unittest.TestCase):

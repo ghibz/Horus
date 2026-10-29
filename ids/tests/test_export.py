@@ -8,17 +8,18 @@ and the table (Treeview) by a tiny stand-in.
 import csv
 import importlib.util
 import os
+import queue
 import sys
 import tempfile
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from ids.alerts import Alert
-from ids.storage import export
+from ids.storage import db, export
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 
@@ -99,6 +100,79 @@ class WriteCsvTests(unittest.TestCase):
             export.write_csv(self._dir.name, [])
 
 
+# ------------------------------------------ what goes into the file (database)
+class SavedAlertsTests(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self._dir.name, "h.db")
+        self.long_ago = db.utc_iso(T0 - timedelta(days=1))
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def save(self, alerts):
+        store = db.AlertStore(self.db_path)
+        store.start()
+        for a in alerts:
+            store.submit(a)
+        store.stop()
+
+    def test_database_row_becomes_the_same_alert_and_the_same_csv_row(self):
+        original = make_alert()
+        self.save([original])
+        rows = db.alerts_since(self.db_path)
+        rebuilt = export.alert_from_row(rows[0])
+        self.assertEqual(rebuilt.timestamp, T0)            # back in local time
+        self.assertEqual(export.alert_to_row(rebuilt), export.alert_to_row(original))
+
+    def test_missing_target_port_and_details_survive_the_round_trip(self):
+        self.save([make_alert(target=None, dst_port=None, details=None)])
+        rebuilt = export.alert_from_row(db.alerts_since(self.db_path)[0])
+        row = export.alert_to_row(rebuilt)
+        self.assertEqual((row[4], row[5], row[7]), ("", "", ""))
+
+    def test_details_that_are_not_json_are_kept_as_text(self):
+        row = {"ts": db.utc_iso(T0), "kind": "k", "severity": "LOW", "source": "s",
+               "target": None, "dst_port": None, "message": "m", "details": "{broken"}
+        self.assertEqual(export.alert_from_row(row).details, "{broken")
+
+    def test_collect_prefers_the_database_when_it_has_everything(self):
+        self.save([make_alert(source=f"10.0.0.{i}") for i in range(10)])
+        table = [make_alert(source=f"10.0.0.{i}") for i in range(7, 10)]   # last 3 only
+        alerts, from_db = export.collect_alerts(table, self.db_path, self.long_ago)
+        self.assertTrue(from_db)
+        self.assertEqual(len(alerts), 10)
+
+    def test_collect_ignores_alerts_from_before_since(self):
+        self.save([make_alert(source=f"10.0.0.{i}", timestamp=T0 + timedelta(minutes=i))
+                   for i in range(5)])
+        since = db.utc_iso(T0 + timedelta(minutes=3))
+        alerts, _ = export.collect_alerts([], self.db_path, since)
+        self.assertEqual([a.source for a in alerts], ["10.0.0.3", "10.0.0.4"])
+
+    def test_collect_falls_back_to_the_table_when_the_database_is_not_trusted(self):
+        self.save([make_alert()] * 5)
+        table = [make_alert()]
+        alerts, from_db = export.collect_alerts(table, self.db_path, self.long_ago,
+                                                trusted=False)
+        self.assertFalse(from_db)
+        self.assertEqual(alerts, table)
+
+    def test_collect_falls_back_when_the_database_has_fewer_than_the_table(self):
+        self.save([make_alert()])
+        table = [make_alert(), make_alert(), make_alert()]    # some were never saved
+        alerts, from_db = export.collect_alerts(table, self.db_path, self.long_ago)
+        self.assertFalse(from_db)
+        self.assertEqual(len(alerts), 3)
+
+    def test_collect_falls_back_when_the_database_cannot_be_read(self):
+        bad = os.path.join(self._dir.name, "no", "such", "folder", "h.db")
+        table = [make_alert()]
+        alerts, from_db = export.collect_alerts(table, bad, self.long_ago)
+        self.assertFalse(from_db)
+        self.assertEqual(alerts, table)
+
+
 # --------------------------------------------------------------- the GUI part
 class FakeTree:
     # just enough of ttk.Treeview: newest row first, like the real table
@@ -149,9 +223,14 @@ class GuiExportTests(unittest.TestCase):
         self.path = os.path.join(self._dir.name, "out.csv")
         self.tree = FakeTree()
         self.status = mock.MagicMock()
+        self.db_path = os.path.join(self._dir.name, "h.db")
+        self.long_ago = db.utc_iso(datetime.now() - timedelta(days=1))
         self.gui = SimpleNamespace(tree=self.tree, _alert_by_row={}, status_var=self.status,
                                    alert_count=0, high_count=0,
-                                   _update_empty_state=lambda: None)
+                                   _update_empty_state=lambda: None,
+                                   store=None, _db_path=self.db_path,
+                                   _since=self.long_ago, _db_lossy=False,
+                                   alert_queue=queue.Queue())
         self.filedialog = self.app.filedialog = mock.MagicMock()
         self.messagebox = self.app.messagebox = mock.MagicMock()
         self.filedialog.asksaveasfilename.return_value = self.path
@@ -164,6 +243,13 @@ class GuiExportTests(unittest.TestCase):
 
     def export(self):
         self.app.HorusApp.export_csv(self.gui)
+
+    def save_to_db(self, alerts):
+        store = db.AlertStore(self.db_path)
+        store.start()
+        for a in alerts:
+            store.submit(a)
+        store.stop()
 
     # ---- bookkeeping
     def test_every_table_row_keeps_its_full_alert(self):
@@ -207,6 +293,69 @@ class GuiExportTests(unittest.TestCase):
         self.export()
         self.assertFalse(os.path.exists(self.path))
         self.messagebox.showerror.assert_not_called()
+
+    # ---- the export is not limited to what the table still shows
+    def test_export_includes_alerts_that_scrolled_out_of_the_table(self):
+        alerts = [make_alert(source=f"10.0.0.{i}", timestamp=datetime.now())
+                  for i in range(10)]
+        self.save_to_db(alerts)
+        with mock.patch.object(self.app, "MAX_ROWS", 3):
+            for a in alerts:
+                self.app.HorusApp._add_alert(self.gui, a)
+        self.assertEqual(len(self.tree.get_children()), 3)          # table: newest 3
+        self.export()
+        rows = read_csv(self.path)[1:]
+        self.assertEqual(len(rows), 10)                              # file: all 10
+        self.assertEqual([r[3] for r in rows], [f"10.0.0.{i}" for i in range(10)])
+        self.assertIn("Exported 10 alerts", self.status.set.call_args.args[0])
+        self.assertNotIn("only what the table shows", self.status.set.call_args.args[0])
+
+    def test_clear_starts_the_export_fresh(self):
+        old = [make_alert(source="10.0.0.1", timestamp=datetime.now() - timedelta(hours=1))]
+        self.save_to_db(old)
+        self.app.HorusApp._add_alert(self.gui, old[0])
+        self.app.HorusApp.clear(self.gui)
+        new = make_alert(source="10.0.0.2", timestamp=datetime.now() + timedelta(seconds=5))
+        self.save_to_db([new])
+        self.app.HorusApp._add_alert(self.gui, new)
+        self.export()
+        self.assertEqual([r[3] for r in read_csv(self.path)[1:]], ["10.0.0.2"])
+
+    def test_clear_also_drops_alerts_still_waiting_for_the_table(self):
+        self.gui.alert_queue.put(make_alert())
+        self.app.HorusApp.clear(self.gui)
+        self.assertTrue(self.gui.alert_queue.empty())
+
+    def test_export_uses_the_table_if_the_database_lost_alerts(self):
+        self.save_to_db([make_alert(source="10.0.0.9", timestamp=datetime.now())])
+        self.gui._db_lossy = True
+        self.add(source="10.0.0.1")
+        self.export()
+        self.assertEqual([r[3] for r in read_csv(self.path)[1:]], ["10.0.0.1"])
+        self.assertIn("only what the table shows", self.status.set.call_args.args[0])
+
+    def test_export_waits_for_the_writer_when_monitoring_is_running(self):
+        self.gui.store = mock.MagicMock()
+        self.add()
+        self.export()
+        self.gui.store.flush.assert_called_once()
+
+    def test_closing_a_store_that_lost_alerts_marks_the_database_untrusted(self):
+        for problem in ({"failed": True}, {"dropped": 3}, {"rejected": 1}):
+            with self.subTest(problem=problem):
+                store = mock.MagicMock(failed=False, dropped=0, rejected=0)
+                for key, value in problem.items():
+                    setattr(store, key, value)
+                self.gui.store, self.gui._db_lossy = store, False
+                self.app.HorusApp._close_store(self.gui)
+                self.assertTrue(self.gui._db_lossy)
+                self.assertIsNone(self.gui.store)
+                store.stop.assert_called_once()
+
+    def test_closing_a_healthy_store_keeps_the_database_trusted(self):
+        self.gui.store = mock.MagicMock(failed=False, dropped=0, rejected=0)
+        self.app.HorusApp._close_store(self.gui)
+        self.assertFalse(self.gui._db_lossy)
 
     # ---- the bug: export errors used to be silent
     def test_unwritable_path_shows_an_error_instead_of_failing_silently(self):

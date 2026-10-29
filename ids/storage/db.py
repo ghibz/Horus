@@ -9,7 +9,8 @@ import json
 import queue
 import sqlite3
 import threading
-from datetime import timezone
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parents[2] / "horus.db"
@@ -61,6 +62,12 @@ def utc_iso(dt) -> str:
     return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def utc_now_iso() -> str:
+    # "now" in the same format as the stored timestamps, so the two can be
+    # compared as plain strings
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
 def connect(path=DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -79,6 +86,24 @@ def recent_alerts(path=DB_PATH, limit=200, kind=None, source=None, severity=None
             args.append(value)
     sql += " ORDER BY ts DESC, id DESC LIMIT ?"
     args.append(limit)
+
+    conn = connect(path)
+    try:
+        return [dict(row) for row in conn.execute(sql, args)]
+    finally:
+        conn.close()
+
+
+def alerts_since(path=DB_PATH, since=None):
+    # Every saved alert from `since` (a utc_iso/utc_now_iso string) onwards,
+    # OLDEST first. since=None means everything. Used by the CSV export, so it
+    # is not capped: the GUI table only keeps the newest rows, the database
+    # keeps them all.
+    sql, args = "SELECT * FROM alerts", []
+    if since is not None:
+        sql += " WHERE ts >= ?"
+        args.append(since)
+    sql += " ORDER BY ts ASC, id ASC"
 
     conn = connect(path)
     try:
@@ -121,6 +146,20 @@ class AlertStore:
         except queue.Full:
             self.dropped += 1
 
+    def flush(self, timeout=3.0) -> bool:
+        # Wait until everything submitted so far has been written to the file,
+        # so a reader (the CSV export) sees the newest alerts too. Returns True
+        # when the queue is fully written; gives up after `timeout` seconds or
+        # as soon as the writer thread is dead, so it can never hang the GUI.
+        if self._thread is None:
+            return True
+        deadline = time.monotonic() + timeout
+        while self._queue.unfinished_tasks:
+            if not self._thread.is_alive() or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
+
     def stop(self) -> None:
         # flush everything still queued, close the session row, close the file
         if self._thread is not None:
@@ -161,7 +200,11 @@ class AlertStore:
                     except queue.Empty:
                         break
 
-                self._insert(conn, [a for a in batch if a is not None])
+                try:
+                    self._insert(conn, [a for a in batch if a is not None])
+                finally:
+                    for _ in batch:             # lets flush() see the queue is written
+                        self._queue.task_done()
                 if self._stopping.is_set() and self._queue.empty():
                     break
 
