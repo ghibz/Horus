@@ -38,6 +38,21 @@ def get(section: str) -> dict:
     return dict(_cache[section])
 
 
+def config_path() -> Path:
+    # HORUS_CONFIG lets you point at another file (the tests use this)
+    return Path(os.environ.get("HORUS_CONFIG") or CONFIG_PATH)
+
+
+def validate() -> Path:
+    # Read and check the whole config file right now, for every detector.
+    # main.py calls this first, so a mistake in config.yaml is reported in a
+    # message box at startup instead of crashing in the middle of an import.
+    # Returns the path that was checked; raises ConfigError if it is invalid.
+    global _cache
+    _cache = _load()
+    return config_path()
+
+
 def reset() -> None:
     # Forget the loaded settings (next get() reads the file again).
     global _cache
@@ -45,8 +60,7 @@ def reset() -> None:
 
 
 def _load() -> dict:
-    # HORUS_CONFIG lets you point at another file (the tests use this)
-    path = Path(os.environ.get("HORUS_CONFIG") or CONFIG_PATH)
+    path = config_path()
     merged = {name: dict(values) for name, values in DEFAULTS.items()}
 
     if not path.is_file():
@@ -57,6 +71,8 @@ def _load() -> dict:
             user = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
         raise ConfigError(f"{path.name} is not valid YAML: {e}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path.name} could not be read: {e}") from e
     if not isinstance(user, dict):
         raise ConfigError(f"{path.name} must contain sections like 'port_scan:'")
 

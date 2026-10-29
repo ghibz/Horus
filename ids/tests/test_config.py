@@ -79,7 +79,6 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             self.load("icmp_flood:\n  threshold: 0\n", "icmp_flood")
 
-
     def test_icmp_unusual_section_has_defaults(self):
         self.assertEqual(self.load("", "icmp_unusual"), config.DEFAULTS["icmp_unusual"])
 
@@ -114,6 +113,45 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(name):
                 with self.assertRaises(config.ConfigError):
                     self.load(text)
+
+    def test_unreadable_file_is_a_config_error(self):
+        # bytes that are not valid UTF-8 must give a clear ConfigError, not a raw crash
+        path = os.path.join(self._dir.name, "binary.yaml")
+        with open(path, "wb") as f:
+            f.write(b"port_scan:\n  threshold: \xff\xfe\n")
+        os.environ["HORUS_CONFIG"] = path
+        config.reset()
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.get("port_scan")
+        self.assertIn("could not be read", str(ctx.exception))
+
+    def test_config_path_follows_the_environment_variable(self):
+        self.write("")
+        self.assertEqual(str(config.config_path()), os.environ["HORUS_CONFIG"])
+
+    def test_validate_accepts_a_good_file_and_returns_its_path(self):
+        self.write("port_scan:\n  threshold: 20\n")
+        self.assertEqual(config.validate(), config.config_path())
+        self.assertEqual(config.get("port_scan")["threshold"], 20)
+
+    def test_validate_accepts_a_missing_file(self):
+        os.environ["HORUS_CONFIG"] = os.path.join(self._dir.name, "nope.yaml")
+        config.validate()    # missing file = defaults, not an error
+
+    def test_validate_rejects_a_mistake_in_any_section(self):
+        # the mistake is in a section other than the first one: validate() must
+        # still find it, without any detector having asked for that section
+        self.write("port_scan:\n  threshold: 20\nicmp_flood:\n  threshold: 0\n")
+        with self.assertRaises(config.ConfigError):
+            config.validate()
+
+    def test_validate_rereads_the_file(self):
+        self.write("port_scan:\n  threshold: 20\n")
+        config.validate()
+        with open(os.environ["HORUS_CONFIG"], "w", encoding="utf-8") as f:
+            f.write("port_scan:\n  threshold: 0\n")
+        with self.assertRaises(config.ConfigError):
+            config.validate()
 
 
 if __name__ == "__main__":
