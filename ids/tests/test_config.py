@@ -6,6 +6,8 @@ import os
 import tempfile
 import unittest
 
+import yaml
+
 from ids import config
 
 
@@ -152,6 +154,47 @@ class ConfigTests(unittest.TestCase):
             f.write("port_scan:\n  threshold: 0\n")
         with self.assertRaises(config.ConfigError):
             config.validate()
+
+
+class ShippedConfigFileTests(unittest.TestCase):
+    """The config.yaml that comes with Horus must match the built-in defaults.
+
+    If someone adds a detector (or changes a default) and forgets config.yaml,
+    or the other way round, the file and the code silently disagree.
+    """
+    def setUp(self):
+        self._old_env = os.environ.get("HORUS_CONFIG")
+        os.environ["HORUS_CONFIG"] = str(config.CONFIG_PATH)   # the real file
+        config.reset()
+
+    def tearDown(self):
+        if self._old_env is None:
+            os.environ.pop("HORUS_CONFIG", None)
+        else:
+            os.environ["HORUS_CONFIG"] = self._old_env
+        config.reset()
+
+    def raw(self):
+        with open(config.CONFIG_PATH, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def test_the_file_exists_and_is_valid(self):
+        self.assertTrue(config.CONFIG_PATH.is_file())
+        config.validate()
+
+    def test_every_detector_has_a_section_in_the_file(self):
+        self.assertEqual(set(self.raw()), set(config.DEFAULTS))
+
+    def test_every_setting_is_listed_in_the_file(self):
+        raw = self.raw()
+        for section, defaults in config.DEFAULTS.items():
+            with self.subTest(section):
+                self.assertEqual(set(raw[section]), set(defaults))
+
+    def test_the_file_values_equal_the_built_in_defaults(self):
+        for section, defaults in config.DEFAULTS.items():
+            with self.subTest(section):
+                self.assertEqual(config.get(section), defaults)
 
 
 if __name__ == "__main__":

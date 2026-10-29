@@ -3,6 +3,7 @@
 # threshold -- how many events trigger the event
 # window_seconds -- how far back the events are counted
 # cooldown_seconds -- min. gap between repeating alerts for the same source
+# (a few detectors only have a cooldown: they alert on every single event)
 
 # Distinct TCP ports from one source:
 port_scan:
@@ -22,6 +23,17 @@ syn_flood:
   window_seconds: 5
   cooldown_seconds: 30
 
+# Ping requests (ICMP echo) received by one target, from any source
+icmp_flood:
+  threshold: 50
+  window_seconds: 5
+  cooldown_seconds: 30
+
+# ICMP timestamp / information / address-mask requests (rarely legitimate).
+# One packet is enough, so there is only a cooldown, per source and ICMP type
+icmp_unusual:
+  cooldown_seconds: 60
+
 # SYNs from one source to a login port
 brute_force:
   threshold: 10
@@ -29,5 +41,6 @@ brute_force:
   cooldown_seconds: 30
   ports: [22, 21, 23, 3389] # SSH, FTP, Telnet, RDP
 
+# An IP address suddenly claimed by a different MAC (only a cooldown, per IP)
 arp_spoof:
   cooldown_seconds: 30
