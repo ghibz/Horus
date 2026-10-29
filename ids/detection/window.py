@@ -46,6 +46,12 @@ class SlidingWindow:
         """The distinct values currently inside the window for `key`."""
         return set(self._values.get(key, ()))
 
+    def top(self, key, n=10) -> list:
+        """The `n` most frequent values inside the window for `key`, busiest first,
+        as [(value, how_many_times), ...]. Ties keep the order they were first seen."""
+        counter = self._values.get(key)
+        return counter.most_common(n) if counter else []
+
     def clear(self):
         self._events.clear()
         self._values.clear()

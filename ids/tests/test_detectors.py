@@ -2,6 +2,7 @@
 
 No network, GUI or admin rights needed: events are built by hand.
 """
+import json
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -92,6 +93,26 @@ class SlidingWindowTests(unittest.TestCase):
         self.w.add("busy", at(10), 1)  # triggers the periodic sweep
         self.assertEqual(len(self.w), 1)
         self.assertEqual(self.w.count("idle"), 0)
+
+    def test_top_lists_the_most_frequent_values_busiest_first(self):
+        for i, value in enumerate(["a", "b", "b", "c", "c", "c"]):
+            self.w.add("k", at(i * 0.1), value)
+        self.assertEqual(self.w.top("k", 2), [("c", 3), ("b", 2)])
+        self.assertEqual(self.w.top("k"), [("c", 3), ("b", 2), ("a", 1)])
+
+    def test_top_ties_keep_first_seen_order(self):
+        for i, value in enumerate(["x", "y", "z"]):
+            self.w.add("k", at(i * 0.1), value)
+        self.assertEqual([v for v, _ in self.w.top("k")], ["x", "y", "z"])
+
+    def test_top_of_unknown_key_is_empty(self):
+        self.assertEqual(self.w.top("nothing"), [])
+
+    def test_top_ignores_expired_events(self):
+        self.w.add("k", at(0), "old")
+        self.w.add("k", at(0.1), "old")
+        self.w.add("k", at(8), "new")      # the two "old" ones left the 5s window
+        self.assertEqual(self.w.top("k"), [("new", 1)])
 
     def test_key_cap_evicts_oldest(self):
         small = SlidingWindow(timedelta(seconds=5), max_keys=3)
@@ -248,6 +269,59 @@ class SynFloodTests(unittest.TestCase):
         self.assertEqual(len(RAISED), 1)
         self.assertIn("sources", RAISED[0].source)
 
+    def test_alert_lists_the_attacker_ips_busiest_first(self):
+        # 30 + 15 + 5 = 50 packets: the alert fires on the 50th
+        senders = [("10.0.0.7", 30), ("10.0.0.8", 15), ("10.0.0.9", 5)]
+        i = 0
+        for src, n in senders:
+            for _ in range(n):
+                syn_flood.process_event(tcp(i * 0.01, src=src))
+                i += 1
+        self.assertEqual(len(RAISED), 1)
+        details = RAISED[0].details
+        self.assertEqual(details["syn_count"], 50)
+        self.assertEqual(details["source_count"], 3)
+        self.assertEqual(details["top_sources"],
+                         [{"ip": "10.0.0.7", "packets": 30},
+                          {"ip": "10.0.0.8", "packets": 15},
+                          {"ip": "10.0.0.9", "packets": 5}])
+
+    def test_single_attacker_is_listed_too(self):
+        for i in range(60):
+            syn_flood.process_event(tcp(i * 0.01))
+        self.assertEqual(RAISED[0].details["top_sources"],
+                         [{"ip": "10.0.0.5", "packets": 50}])
+
+    def test_only_the_top_ten_sources_are_stored(self):
+        # 50 different (spoofed) sources, one packet each
+        for i in range(60):
+            syn_flood.process_event(tcp(i * 0.01, src=f"172.16.0.{i}"))
+        details = RAISED[0].details
+        self.assertEqual(details["source_count"], 50)
+        self.assertEqual(len(details["top_sources"]), syn_flood.TOP_SOURCES)
+        self.assertEqual(len(details["top_sources"]), 10)
+
+    def test_a_heavy_source_is_not_lost_among_many_small_ones(self):
+        # 40 packets from one attacker hidden among 10 one-packet sources
+        packets = [("203.0.113.9", 40)] + [(f"172.16.0.{i}", 1) for i in range(10)]
+        i = 0
+        for src, n in packets:
+            for _ in range(n):
+                syn_flood.process_event(tcp(i * 0.01, src=src))
+                i += 1
+        top = RAISED[0].details["top_sources"]
+        self.assertEqual(top[0], {"ip": "203.0.113.9", "packets": 40})
+
+    def test_ipv6_sources_are_listed(self):
+        for i in range(60):
+            syn_flood.process_event(tcp(i * 0.01, src="2001:db8::5"))
+        self.assertEqual(RAISED[0].details["top_sources"][0]["ip"], "2001:db8::5")
+
+    def test_details_are_json_serializable(self):
+        for i in range(60):
+            syn_flood.process_event(tcp(i * 0.01, src=f"172.16.0.{i % 20}"))
+        json.dumps(RAISED[0].details)    # would raise if not
+
     def test_below_threshold_is_quiet(self):
         for i in range(30):
             syn_flood.process_event(tcp(i * 0.01))
@@ -375,6 +449,59 @@ class IcmpFloodTests(unittest.TestCase):
             icmp_flood.process_event(icmp(i * 0.01, src=f"172.16.{i // 250}.{i % 250}"))
         self.assertEqual(len(RAISED), 1)
         self.assertIn("sources", RAISED[0].source)
+
+    def test_alert_lists_the_attacker_ips_busiest_first(self):
+        # 30 + 15 + 5 = 50 packets: the alert fires on the 50th
+        senders = [("10.0.0.7", 30), ("10.0.0.8", 15), ("10.0.0.9", 5)]
+        i = 0
+        for src, n in senders:
+            for _ in range(n):
+                icmp_flood.process_event(icmp(i * 0.01, src=src))
+                i += 1
+        self.assertEqual(len(RAISED), 1)
+        details = RAISED[0].details
+        self.assertEqual(details["ping_count"], 50)
+        self.assertEqual(details["source_count"], 3)
+        self.assertEqual(details["top_sources"],
+                         [{"ip": "10.0.0.7", "packets": 30},
+                          {"ip": "10.0.0.8", "packets": 15},
+                          {"ip": "10.0.0.9", "packets": 5}])
+
+    def test_single_attacker_is_listed_too(self):
+        for i in range(60):
+            icmp_flood.process_event(icmp(i * 0.01))
+        self.assertEqual(RAISED[0].details["top_sources"],
+                         [{"ip": "10.0.0.5", "packets": 50}])
+
+    def test_only_the_top_ten_sources_are_stored(self):
+        # 50 different (spoofed) sources, one packet each
+        for i in range(60):
+            icmp_flood.process_event(icmp(i * 0.01, src=f"172.16.0.{i}"))
+        details = RAISED[0].details
+        self.assertEqual(details["source_count"], 50)
+        self.assertEqual(len(details["top_sources"]), icmp_flood.TOP_SOURCES)
+        self.assertEqual(len(details["top_sources"]), 10)
+
+    def test_a_heavy_source_is_not_lost_among_many_small_ones(self):
+        # 40 packets from one attacker hidden among 10 one-packet sources
+        packets = [("203.0.113.9", 40)] + [(f"172.16.0.{i}", 1) for i in range(10)]
+        i = 0
+        for src, n in packets:
+            for _ in range(n):
+                icmp_flood.process_event(icmp(i * 0.01, src=src))
+                i += 1
+        top = RAISED[0].details["top_sources"]
+        self.assertEqual(top[0], {"ip": "203.0.113.9", "packets": 40})
+
+    def test_ipv6_sources_are_listed(self):
+        for i in range(60):
+            icmp_flood.process_event(icmp(i * 0.01, src="2001:db8::5"))
+        self.assertEqual(RAISED[0].details["top_sources"][0]["ip"], "2001:db8::5")
+
+    def test_details_are_json_serializable(self):
+        for i in range(60):
+            icmp_flood.process_event(icmp(i * 0.01, src=f"172.16.0.{i % 20}"))
+        json.dumps(RAISED[0].details)    # would raise if not
 
     def test_below_threshold_is_quiet(self):
         for i in range(30):

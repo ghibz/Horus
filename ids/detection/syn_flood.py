@@ -12,6 +12,9 @@ SYN_THRESHOLD = _cfg["threshold"]
 TIME_WINDOW = timedelta(seconds=_cfg["window_seconds"])
 ALERT_COOLDOWN = timedelta(seconds=_cfg["cooldown_seconds"])
 
+# how many of the busiest sources are written into an alert's details
+TOP_SOURCES = 10
+
 # detector's memory: per TARGET (dst IP, dst port), the SYNs it received recently,
 # remembering which source sent each one
 recent_syns = SlidingWindow(TIME_WINDOW)
@@ -44,10 +47,11 @@ def process_event(event):
     syn_count = recent_syns.count(target)
 
     if syn_count >= SYN_THRESHOLD and cooldown.allow(target, now):
-        raise_alert(target[0], target[1], syn_count, recent_syns.values(target))
+        raise_alert(target[0], target[1], syn_count, recent_syns.values(target),
+                    recent_syns.top(target, TOP_SOURCES))
 
 
-def raise_alert(dst_ip, dst_port, count, sources):
+def raise_alert(dst_ip, dst_port, count, sources, top_sources=()):
     window = int(TIME_WINDOW.total_seconds())
     if len(sources) == 1:
         source = next(iter(sources))
@@ -60,7 +64,9 @@ def raise_alert(dst_ip, dst_port, count, sources):
          f"{count} SYNs to {format_endpoint(dst_ip, dst_port)} in the last {window}s{detail}",
          target=dst_ip, dst_port=dst_port,
          details={"syn_count": count, "source_count": len(sources),
-                  "window_seconds": window})
+                  "window_seconds": window,
+                  # who is attacking: the busiest sources, most SYNs first
+                  "top_sources": [{"ip": ip, "packets": n} for ip, n in top_sources]})
 
 
 """ TESTED WITH COMMAND :
