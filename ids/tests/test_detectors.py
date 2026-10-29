@@ -4,6 +4,7 @@ No network, GUI or admin rights needed: events are built by hand.
 """
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
 from ids import alerts
 from ids.capture import sniffer
@@ -511,6 +512,70 @@ class ArpSpoofTests(unittest.TestCase):
         arp_spoof.process_event(arp(1, "0.0.0.0", "bb:bb:bb:bb:bb:bb"))
         arp_spoof.process_event(arp(2, "0.0.0.0", "cc:cc:cc:cc:cc:cc"))
         self.assertEqual(RAISED, [])
+
+    # ---- the IP -> MAC table is bounded (a flood of fake IPs can't eat RAM) ----
+    @staticmethod
+    def fake_ip(n):
+        return f"10.{n // 65536}.{(n // 256) % 256}.{n % 256}"
+
+    def flood(self, count, start=0):
+        # `count` ARP packets, each from a different IP
+        for n in range(start, start + count):
+            arp_spoof.process_event(arp(n, self.fake_ip(n), "aa:aa:aa:aa:aa:aa"))
+
+    def test_table_never_grows_past_the_cap(self):
+        with mock.patch.object(arp_spoof, "MAX_MAPPINGS", 100):
+            self.flood(1000)
+        self.assertEqual(len(arp_spoof.known_mappings), 100)
+
+    def test_real_sized_flood_stays_at_the_real_cap(self):
+        # the exact scenario from the audit: 100,000 fake IPs
+        self.flood(100_000)
+        self.assertEqual(len(arp_spoof.known_mappings), arp_spoof.MAX_MAPPINGS)
+
+    def test_idlest_entries_are_dropped_first(self):
+        with mock.patch.object(arp_spoof, "MAX_MAPPINGS", 100):
+            self.flood(150)
+        self.assertNotIn(self.fake_ip(0), arp_spoof.known_mappings)
+        self.assertNotIn(self.fake_ip(49), arp_spoof.known_mappings)
+        self.assertIn(self.fake_ip(50), arp_spoof.known_mappings)
+        self.assertIn(self.fake_ip(149), arp_spoof.known_mappings)
+
+    def test_busy_host_survives_a_flood_and_is_still_protected(self):
+        gateway, idle = "192.168.1.1", "192.168.1.77"
+        with mock.patch.object(arp_spoof, "MAX_MAPPINGS", 100):
+            arp_spoof.process_event(arp(0, gateway, "aa:aa:aa:aa:aa:aa"))
+            arp_spoof.process_event(arp(0, idle, "cc:cc:cc:cc:cc:cc"))
+            for n in range(1, 501):
+                self.flood(1, start=n)
+                self.assertIn(gateway, arp_spoof.known_mappings)   # never forgotten, not even briefly
+                if n % 10 == 0:    # the gateway keeps talking, the other host doesn't
+                    arp_spoof.process_event(arp(n, gateway, "aa:aa:aa:aa:aa:aa"))
+            self.assertNotIn(idle, arp_spoof.known_mappings)
+            # ...and a spoof of the busy host is still caught after all that churn
+            arp_spoof.process_event(arp(600, gateway, "bb:bb:bb:bb:bb:bb"))
+        self.assertEqual([a.kind for a in RAISED], ["ARP spoof"])
+
+    def test_a_spoof_attempt_counts_as_activity_for_that_entry(self):
+        # the mismatching packet must refresh the entry, otherwise an attacker
+        # could get the real mapping pushed out just by being noisy
+        gateway = "192.168.1.1"
+        with mock.patch.object(arp_spoof, "MAX_MAPPINGS", 100):
+            arp_spoof.process_event(arp(0, gateway, "aa:aa:aa:aa:aa:aa"))
+            self.flood(98, start=1)
+            arp_spoof.process_event(arp(200, gateway, "bb:bb:bb:bb:bb:bb"))   # spoof
+            self.flood(50, start=1000)
+        self.assertEqual(arp_spoof.known_mappings[gateway], "aa:aa:aa:aa:aa:aa")
+
+    def test_host_that_was_pushed_out_is_simply_learned_again(self):
+        # known trade-off of a bounded table: an idle host that was forgotten is
+        # treated as new, so its next packet is learned rather than alerted on
+        with mock.patch.object(arp_spoof, "MAX_MAPPINGS", 10):
+            arp_spoof.process_event(arp(0, "192.168.1.5", "aa:aa:aa:aa:aa:aa"))
+            self.flood(20, start=1000)
+            arp_spoof.process_event(arp(50, "192.168.1.5", "bb:bb:bb:bb:bb:bb"))
+        self.assertEqual(RAISED, [])
+        self.assertEqual(len(arp_spoof.known_mappings), 10)
 
 
 if __name__ == "__main__":
