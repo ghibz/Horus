@@ -7,7 +7,6 @@ Threading model:
   * The GUI thread drains that queue every POLL_MS and is the only code that
     touches widgets (Tkinter is not thread-safe).
 """
-import csv
 import queue
 import time
 import tkinter as tk
@@ -17,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 from ids import alerts
 from ids import config
 from ids.capture import sniffer as capture
+from ids.storage import export
 from ids.storage.db import AlertStore
 
 AUTO = "Auto (default)"
@@ -65,6 +65,9 @@ class HorusApp(tk.Tk):
         self._stalled = False
         self.alert_count = 0
         self.high_count = 0
+        # table row id -> the full Alert, so the CSV export can include the
+        # fields the table doesn't show (target, port, details)
+        self._alert_by_row = {}
 
         self.logo = self._load_logo()
         if self.logo:
@@ -356,6 +359,7 @@ class HorusApp(tk.Tk):
 
     def clear(self):
         self.tree.delete(*self.tree.get_children())
+        self._alert_by_row.clear()
         self.alert_count = 0
         self.high_count = 0
         self._update_empty_state()
@@ -369,12 +373,19 @@ class HorusApp(tk.Tk):
             initialfile=f"horus_alerts_{time.strftime('%Y%m%d_%H%M%S')}.csv")
         if not path:
             return
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Time", "Severity", "Type", "Source", "Details"])
-            for row_id in reversed(self.tree.get_children()):  # oldest first
-                writer.writerow(self.tree.item(row_id, "values"))
-        self.status_var.set(f"Exported alerts to {path}")
+        rows = reversed(self.tree.get_children())               # oldest first
+        to_export = [self._alert_by_row[r] for r in rows if r in self._alert_by_row]
+        try:
+            export.write_csv(path, to_export)
+        except Exception as exc:    # a button must never fail silently
+            self.status_var.set("Export failed")
+            messagebox.showerror(
+                "Horus - export failed",
+                f"The alerts could not be saved to:\n{path}\n\n{exc}\n\n"
+                "If the file is open in Excel, close it. Otherwise pick another "
+                "folder or file name.")
+            return
+        self.status_var.set(f"Exported {len(to_export)} alerts to {path}")
 
     # ------------------------------------------------------------ updates
     def _poll(self):
@@ -391,11 +402,13 @@ class HorusApp(tk.Tk):
     def _add_alert(self, alert):
         values = (alert.timestamp.strftime("%Y-%m-%d %H:%M:%S"), alert.severity,
                   alert.kind, alert.source, alert.message)
-        self.tree.insert("", 0, values=values, tags=(alert.severity,))  # newest on top
+        row_id = self.tree.insert("", 0, values=values, tags=(alert.severity,))  # newest on top
+        self._alert_by_row[row_id] = alert
 
         rows = self.tree.get_children()
         if len(rows) > MAX_ROWS:
             self.tree.delete(rows[-1])
+            self._alert_by_row.pop(rows[-1], None)
 
         self.alert_count += 1
         if alert.severity == "HIGH":
